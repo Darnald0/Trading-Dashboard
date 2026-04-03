@@ -1,0 +1,7 @@
+ib_insync
+dash
+dash-bootstrap-components
+plotly
+numpy
+scipy
+pandas
