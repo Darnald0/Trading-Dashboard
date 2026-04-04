@@ -120,24 +120,38 @@ sidebar = html.Div(
 )
 
 # Layout:  Sidebar | Gamma | Charm (top 70%)
-#                          | Vanna (bottom 30%)
+#                          | Vanna | Zomma  (bottom 30%, side by side)
 charts_panel = html.Div(
     [
-        # Left column: Gamma (full height, narrower)
+        # Left column: Gamma (full height)
         html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
             style={"flex": 0.7, "minWidth": 0, "height": "100vh"},
         ),
-        # Right column: Charm stacked above Vanna (wider)
+        # Right column: Charm on top, Vanna+Zomma on bottom
         html.Div(
             [
                 html.Div(
                     dcc.Graph(id="chart-charm", style={"height": "100%"}),
                     style={"flex": 7, "minHeight": 0},   # 70%
                 ),
+                # Bottom row: Vanna + Zomma side by side
                 html.Div(
-                    dcc.Graph(id="chart-vanna", style={"height": "100%"}),
-                    style={"flex": 3, "minHeight": 0},   # 30%
+                    [
+                        html.Div(
+                            dcc.Graph(id="chart-vanna", style={"height": "100%"}),
+                            style={"flex": 2, "minWidth": 0},
+                        ),
+                        html.Div(
+                            dcc.Graph(id="chart-zomma", style={"height": "100%"}),
+                            style={"flex": 3, "minWidth": 0},
+                        ),
+                    ],
+                    style={
+                        "flex": 3,              # 30% of column height
+                        "minHeight": 0,
+                        "display": "flex",      # side by side
+                    },
                 ),
             ],
             style={
@@ -231,6 +245,7 @@ def on_mode_change(mode):
     Output("chart-gamma", "figure"),
     Output("chart-charm", "figure"),
     Output("chart-vanna", "figure"),
+    Output("chart-zomma", "figure"),
     Output("status-text", "children"),
     Output("dropdown-expiry", "options", allow_duplicate=True),
     Input("interval-poll", "n_intervals"),
@@ -240,19 +255,19 @@ def on_mode_change(mode):
 def poll_and_render(n, charm_view):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, "Initialising...", dash.no_update
+        return e, e, e, e, "Initialising...", dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, f"X  {error}", dash.no_update
+        return e, e, e, e, f"X  {error}", dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, "Fetching from IB...", dash.no_update
+        return e, e, e, e, "Fetching from IB...", dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -320,6 +335,21 @@ def poll_and_render(n, charm_view):
                               ],
                               compact=True)
 
+    # ── Zomma (bar) ──────────────────────────────────────────────────
+    fig_zomma = _build_chart(exp_df, "strike", "zomma_exp",
+                              "Zomma", spot, "#66bb6a", "#ef5350",
+                              lines=[
+                                  {"type": "exposure_max", "label": "Max Pos Zomma",
+                                   "color": "#66bb6a", "side": "left"},
+                                  {"type": "exposure_min", "label": "Max Neg Zomma",
+                                   "color": "#ef5350", "side": "left"},
+                                  {"type": "net_max", "label": "Max Net Zomma",
+                                   "color": "#e0e0e0", "side": "left"},
+                                  {"type": "net_min", "label": "Min Net Zomma",
+                                   "color": "#9e9e9e", "side": "left"},
+                              ],
+                              compact=True, show_spot=False)
+
     # ── Status ───────────────────────────────────────────────────────
     nice_exp = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:]}"
     exp_date = dt.date(int(resolved[:4]), int(resolved[4:6]), int(resolved[6:]))
@@ -346,7 +376,7 @@ def poll_and_render(n, charm_view):
     for e in expiries:
         opts.append({"label": f"{e[:4]}-{e[4:6]}-{e[6:]}", "value": e})
 
-    return fig_gamma, fig_charm, fig_vanna, status, opts
+    return fig_gamma, fig_charm, fig_vanna, fig_zomma, status, opts
 
 
 # ══════════════════════════════════════════════════════════════════════════════

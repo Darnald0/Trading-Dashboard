@@ -68,6 +68,17 @@ def vanna(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
     return -norm.pdf(d1_val) * d2_val / sigma
 
 
+def zomma(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
+    """
+    Zomma  =  ∂gamma/∂sigma  =  N'(d1) · (d1·d2 - 1) / (S · σ² · √T)
+    Same for calls and puts.  Shows how gamma changes when IV moves.
+    """
+    d1_val = _d1(S, K, T, sigma, r, q)
+    d2_val = _d2(S, K, T, sigma, r, q)
+    sqrtT  = np.sqrt(T)
+    return norm.pdf(d1_val) * (d1_val * d2_val - 1.0) / (S * sigma**2 * sqrtT)
+
+
 # ── exposure aggregation ─────────────────────────────────────────────────────
 
 def compute_exposure(chain_df, spot, greek_mode="oi"):
@@ -126,11 +137,17 @@ def compute_exposure(chain_df, spot, greek_mode="oi"):
     v_put  = vanna(S, K, T, put_iv)  * put_w  * 100 * (-1)
     vanna_exp = v_call + v_put
 
+    # ── Zomma exposure ─────────────────────────────────────────────────
+    z_call = zomma(S, K, T, call_iv) * call_w * 100 * S
+    z_put  = zomma(S, K, T, put_iv)  * put_w  * 100 * S * (-1)
+    zomma_exp = z_call + z_put
+
     return pd.DataFrame({
         "strike":    K,
         "gamma_exp": gamma_exp,
         "charm_exp": charm_exp,
         "vanna_exp": vanna_exp,
+        "zomma_exp": zomma_exp,
     })
 
 
