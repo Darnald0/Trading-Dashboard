@@ -262,10 +262,28 @@ def poll_and_render(n, charm_view):
 
     exp_df = compute_exposure(chain, spot, greek_mode=mode)
 
+    # Previous day high/low from cache
+    prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
+
     # ── Gamma (bar) ──────────────────────────────────────────────────
     fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
                               "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
-                              max_label="Max GEX")
+                              lines=[
+                                  {"type": "exposure_max", "label": "Max Pos GEX",
+                                   "color": "#00ffcc", "side": "left"},
+                                  {"type": "exposure_min", "label": "Max Neg GEX",
+                                   "color": "#ff6b6b", "side": "left"},
+                                  {"type": "net_max", "label": "Max Net GEX",
+                                   "color": "#e0e0e0", "side": "left"},
+                                  {"type": "net_min", "label": "Min Net GEX",
+                                   "color": "#9e9e9e", "side": "left"},
+                                  {"type": "price", "value": prev_hl["high"],
+                                   "label": "Prev High",
+                                   "color": "#80cbc4", "side": "right"},
+                                  {"type": "price", "value": prev_hl["low"],
+                                   "label": "Prev Low",
+                                   "color": "#ef9a9a", "side": "right"},
+                              ])
 
     # ── Charm (bar or heatmap) ───────────────────────────────────────
     if charm_view == "heatmap":
@@ -274,11 +292,32 @@ def poll_and_render(n, charm_view):
                                           chain=chain, greek_mode=mode)
     else:
         fig_charm = _build_chart(exp_df, "strike", "charm_exp",
-                                  "Charm", spot, "#4dabf7", "#f783ac")
+                                  "Charm", spot, "#4dabf7", "#f783ac",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos Charm",
+                                       "color": "#4dabf7", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg Charm",
+                                       "color": "#f783ac", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net Charm",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      {"type": "net_min", "label": "Min Net Charm",
+                                       "color": "#9e9e9e", "side": "left"},
+                                  ],
+                                  show_spot=False)
 
     # ── Vanna (bar) ──────────────────────────────────────────────────
     fig_vanna = _build_chart(exp_df, "strike", "vanna_exp",
                               "Vanna", spot, "#a78bfa", "#fb923c",
+                              lines=[
+                                  {"type": "exposure_max", "label": "Max Pos Vanna",
+                                   "color": "#a78bfa", "side": "left"},
+                                  {"type": "exposure_min", "label": "Max Neg Vanna",
+                                   "color": "#fb923c", "side": "left"},
+                                  {"type": "net_max", "label": "Max Net Vanna",
+                                   "color": "#e0e0e0", "side": "left"},
+                                  {"type": "net_min", "label": "Min Net Vanna",
+                                   "color": "#9e9e9e", "side": "left"},
+                              ],
                               compact=True)
 
     # ── Status ───────────────────────────────────────────────────────
@@ -315,9 +354,20 @@ def poll_and_render(n, charm_view):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
-                 max_label=None, compact=False):
+                 lines=None, compact=False, show_spot=True):
     """Horizontal bar chart: Y=strike, X=exposure.
-    compact=True uses tighter margins and larger dtick for small panels."""
+    compact=True uses tighter margins and larger dtick for small panels.
+    show_spot=False hides the spot price line.
+
+    lines: list of dicts, each with:
+        "value":  Y-axis value (strike or price)
+        "label":  text label
+        "color":  line color
+        "side":   "left" or "right" (annotation placement)
+        "type":   "exposure_max" | "exposure_min" | "price"
+            exposure_max/min: finds the strike with max/min exposure
+            price: draws at the exact value given
+    """
     df_sorted = df.sort_values(x_col, ascending=True).copy()
     colors = [color_pos if v >= 0 else color_neg for v in df_sorted[y_col]]
 
@@ -334,34 +384,77 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
     ))
 
     # Spot line
-    fig.add_shape(
-        type="line", x0=0, x1=1, xref="paper",
-        y0=spot, y1=spot, yref="y",
-        line=dict(color="#facc15", width=2, dash="dash"),
-    )
-    fig.add_annotation(
-        x=1, xref="paper", y=spot, yref="y",
-        text=f" ${spot:,.1f}", showarrow=False,
-        font=dict(color="#facc15", size=9 if compact else 10), xanchor="left",
-    )
+    if show_spot:
+        fig.add_shape(
+            type="line", x0=0, x1=1, xref="paper",
+            y0=spot, y1=spot, yref="y",
+            line=dict(color="#facc15", width=2, dash="dash"),
+        )
+        fig.add_annotation(
+            x=1, xref="paper", y=spot, yref="y",
+            text=f" ${spot:,.1f}", showarrow=False,
+            font=dict(color="#facc15", size=9 if compact else 10), xanchor="left",
+        )
 
-    # Max exposure line
-    if max_label and not df_sorted.empty:
-        max_idx = df_sorted[y_col].idxmax()
-        max_strike = df_sorted.loc[max_idx, x_col]
-        max_val = df_sorted.loc[max_idx, y_col]
-        if max_val > 0:
+    # Indicator lines
+    if lines and not df_sorted.empty:
+        sz = 8 if compact else 9
+        for ln in lines:
+            ltype = ln.get("type", "price")
+            color = ln["color"]
+            label = ln["label"]
+            side  = ln.get("side", "left")
+
+            if ltype == "exposure_max":
+                idx = df_sorted[y_col].idxmax()
+                val = df_sorted.loc[idx, y_col]
+                strike = df_sorted.loc[idx, x_col]
+                if val <= 0:
+                    continue
+                y_pos = strike
+                txt = f" {label} @ {strike:,.0f}"
+            elif ltype == "exposure_min":
+                idx = df_sorted[y_col].idxmin()
+                val = df_sorted.loc[idx, y_col]
+                strike = df_sorted.loc[idx, x_col]
+                if val >= 0:
+                    continue
+                y_pos = strike
+                txt = f" {label} @ {strike:,.0f}"
+            elif ltype == "net_max":
+                # Strike with the largest absolute exposure
+                abs_vals = df_sorted[y_col].abs()
+                idx = abs_vals.idxmax()
+                strike = df_sorted.loc[idx, x_col]
+                val = df_sorted.loc[idx, y_col]
+                y_pos = strike
+                txt = f" {label} @ {strike:,.0f}"
+            elif ltype == "net_min":
+                # Strike with the smallest absolute exposure (closest to zero)
+                abs_vals = df_sorted[y_col].abs()
+                idx = abs_vals.idxmin()
+                strike = df_sorted.loc[idx, x_col]
+                val = df_sorted.loc[idx, y_col]
+                y_pos = strike
+                txt = f" {label} @ {strike:,.0f}"
+            else:  # "price"
+                y_pos = ln["value"]
+                if y_pos == 0:
+                    continue
+                txt = f" {label} ${y_pos:,.1f}"
+
             fig.add_shape(
                 type="line", x0=0, x1=1, xref="paper",
-                y0=max_strike, y1=max_strike, yref="y",
-                line=dict(color="#00ffcc", width=1.5, dash="dot"),
+                y0=y_pos, y1=y_pos, yref="y",
+                line=dict(color=color, width=1.5, dash="dot"),
             )
+            x_anchor = "left" if side == "left" else "right"
+            x_pos = 0 if side == "left" else 1
             fig.add_annotation(
-                x=0, xref="paper", y=max_strike, yref="y",
-                text=f" {max_label} @ {max_strike:,.0f}",
-                showarrow=False,
-                font=dict(color="#00ffcc", size=9),
-                xanchor="left", yshift=10,
+                x=x_pos, xref="paper", y=y_pos, yref="y",
+                text=txt, showarrow=False,
+                font=dict(color=color, size=sz),
+                xanchor=x_anchor, yshift=10,
             )
 
     margins = dict(l=50, r=30, t=20, b=15) if compact else dict(l=55, r=40, t=30, b=30)
@@ -517,17 +610,55 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
         xanchor="center", yanchor="bottom",
     )
 
-    # Spot line
-    fig.add_shape(
-        type="line", x0=0, x1=1, xref="paper",
-        y0=spot, y1=spot, yref="y",
-        line=dict(color="#facc15", width=1.5, dash="dash"),
-    )
-    fig.add_annotation(
-        x=0, xref="paper", y=spot, yref="y",
-        text=f"${spot:,.1f} ", showarrow=False,
-        font=dict(color="#facc15", size=9), xanchor="right",
-    )
+    # Max Pos / Max Neg / Net charm lines (from the "now" column of the grid)
+    now_col = z_raw[:, now_idx] if now_idx < z_raw.shape[1] else z_raw[:, -1]
+    pos_idx = int(np.argmax(now_col))
+    neg_idx = int(np.argmin(now_col))
+    abs_col = np.abs(now_col)
+    net_max_idx = int(np.argmax(abs_col))
+    net_min_idx = int(np.argmin(abs_col))
+
+    # Max Pos Charm
+    if now_col[pos_idx] > 0:
+        s = strikes[pos_idx]
+        fig.add_shape(type="line", x0=0, x1=1, xref="paper",
+                      y0=s, y1=s, yref="y",
+                      line=dict(color="#4dabf7", width=1.5, dash="dot"))
+        fig.add_annotation(x=1, xref="paper", y=s, yref="y",
+                           text=f" Max Pos Charm @ {s:,.0f}", showarrow=False,
+                           font=dict(color="#4dabf7", size=8),
+                           xanchor="left", yshift=8)
+
+    # Max Neg Charm
+    if now_col[neg_idx] < 0:
+        s = strikes[neg_idx]
+        fig.add_shape(type="line", x0=0, x1=1, xref="paper",
+                      y0=s, y1=s, yref="y",
+                      line=dict(color="#f783ac", width=1.5, dash="dot"))
+        fig.add_annotation(x=1, xref="paper", y=s, yref="y",
+                           text=f" Max Neg Charm @ {s:,.0f}", showarrow=False,
+                           font=dict(color="#f783ac", size=8),
+                           xanchor="left", yshift=-8)
+
+    # Max Net Charm (largest absolute)
+    s = strikes[net_max_idx]
+    fig.add_shape(type="line", x0=0, x1=1, xref="paper",
+                  y0=s, y1=s, yref="y",
+                  line=dict(color="#e0e0e0", width=1.5, dash="dot"))
+    fig.add_annotation(x=1, xref="paper", y=s, yref="y",
+                       text=f" Max Net Charm @ {s:,.0f}", showarrow=False,
+                       font=dict(color="#e0e0e0", size=8),
+                       xanchor="left", yshift=8)
+
+    # Min Net Charm (smallest absolute / closest to zero)
+    s = strikes[net_min_idx]
+    fig.add_shape(type="line", x0=0, x1=1, xref="paper",
+                  y0=s, y1=s, yref="y",
+                  line=dict(color="#9e9e9e", width=1.5, dash="dot"))
+    fig.add_annotation(x=1, xref="paper", y=s, yref="y",
+                       text=f" Min Net Charm @ {s:,.0f}", showarrow=False,
+                       font=dict(color="#9e9e9e", size=8),
+                       xanchor="left", yshift=-8)
 
     # Layout
     s_min, s_max = min(strikes), max(strikes)

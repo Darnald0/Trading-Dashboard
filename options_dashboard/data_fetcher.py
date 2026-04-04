@@ -84,6 +84,29 @@ class IBDataFetcher:
         self.ib.cancelMktData(contract)
         return price
 
+    def get_prev_day_hl(self, ticker: str) -> dict:
+        """Return previous trading day's high and low from IB historical data."""
+        contract = _make_underlying(ticker)
+        self.ib.qualifyContracts(contract)
+        try:
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr="2 D",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+            if len(bars) >= 2:
+                prev = bars[-2]  # second-to-last = previous day
+                return {"high": float(prev.high), "low": float(prev.low)}
+            elif len(bars) == 1:
+                return {"high": float(bars[0].high), "low": float(bars[0].low)}
+        except Exception as exc:
+            print(f"  Warning: could not fetch prev day H/L: {exc}")
+        return {"high": 0.0, "low": 0.0}
+
     # ── chain definitions ────────────────────────────────────────────────
 
     def _get_all_chains(self, ticker: str):
@@ -262,6 +285,10 @@ class MockDataFetcher:
                     "SPX": 5450.0, "NDX": 18500.0}
         return _prices.get(ticker.upper(), 100.0)
 
+    def get_prev_day_hl(self, ticker: str) -> dict:
+        spot = self.get_spot(ticker)
+        return {"high": spot * 1.008, "low": spot * 0.992}
+
     def get_expiries(self, ticker: str) -> list[str]:
         today = dt.date.today()
         expiries = []
@@ -420,6 +447,13 @@ class DataManager:
         spot     = fetcher.get_spot(ticker)
         chain    = fetcher.fetch_chain(ticker, resolved, spot)
 
+        # Fetch previous day H/L (only once per ticker)
+        prev_hl = self._cache.get("prev_day_hl", {"high": 0, "low": 0})
+        cached_ticker = self._cache.get("ticker", "")
+        if ticker != cached_ticker or prev_hl["high"] == 0:
+            prev_hl = fetcher.get_prev_day_hl(ticker)
+            print(f"  Prev day: H={prev_hl['high']:.2f}  L={prev_hl['low']:.2f}")
+
         # ── Compute charm per strike for the heatmap history ─────────
         now = dt.datetime.now(tz=ET)
         charm_snapshot = {}
@@ -447,13 +481,14 @@ class DataManager:
                     self._charm_history = self._charm_history[-self._MAX_HISTORY:]
 
             self._cache = {
-                "ticker":    ticker,
-                "spot":      spot,
-                "expiry":    resolved,
-                "expiries":  expiries,
-                "chain":     chain,
-                "error":     None,
-                "timestamp": time.time(),
+                "ticker":      ticker,
+                "spot":        spot,
+                "expiry":      resolved,
+                "expiries":    expiries,
+                "chain":       chain,
+                "prev_day_hl": prev_hl,
+                "error":       None,
+                "timestamp":   time.time(),
             }
 
 
