@@ -16,7 +16,7 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from config import SETTINGS, SIDEBAR_WIDTH
+from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
 from greek_calculator import compute_exposure
 
@@ -288,7 +288,7 @@ def poll_and_render(n, charm_view):
     mode_label = {"oi": "Open Interest", "volume": "Volume",
                   "combined": "OI+Vol"}[mode]
     ts = cache.get("timestamp", 0)
-    updated = dt.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "-"
+    updated = dt.datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S ET") if ts else "-"
 
     history_len = len(data_fetcher.data_manager.get_charm_history()) \
         if data_fetcher.data_manager else 0
@@ -414,13 +414,14 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
     if chain is None or chain.empty:
         return _empty_fig("No chain data for heatmap")
 
-    now = dt.datetime.now()
-    today = now.date()
-    market_open  = dt.datetime.combine(today, dt.time(9, 30))
-    market_close = dt.datetime.combine(today, dt.time(16, 0))
+    # All market times in US Eastern
+    now_et = dt.datetime.now(tz=ET)
+    today_et = now_et.date()
+    market_open  = dt.datetime.combine(today_et, dt.time(9, 30), tzinfo=ET)
+    market_close = dt.datetime.combine(today_et, dt.time(16, 0), tzinfo=ET)
 
     # Clamp "now" to market hours
-    now_clamped = max(now, market_open)
+    now_clamped = max(now_et, market_open)
     now_clamped = min(now_clamped, market_close)
 
     mins_since_open = max(int((now_clamped - market_open).total_seconds() / 60), 0)

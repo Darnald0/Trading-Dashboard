@@ -15,7 +15,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
-from config import IB_HOST, IB_PORT, IB_CLIENT_ID, SETTINGS, INDEX_TICKERS
+from config import IB_HOST, IB_PORT, IB_CLIENT_ID, SETTINGS, INDEX_TICKERS, ET
 
 USE_MOCK = False
 
@@ -421,7 +421,7 @@ class DataManager:
         chain    = fetcher.fetch_chain(ticker, resolved, spot)
 
         # ── Compute charm per strike for the heatmap history ─────────
-        now = dt.datetime.now()
+        now = dt.datetime.now(tz=ET)
         charm_snapshot = {}
         if chain is not None and not chain.empty:
             from greek_calculator import compute_exposure
