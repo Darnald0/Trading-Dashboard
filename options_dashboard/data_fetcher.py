@@ -279,15 +279,24 @@ class MockDataFetcher:
     def disconnect(self):
         pass
 
+    _base_prices = {"SPY": 545.0, "QQQ": 470.0, "AAPL": 230.0,
+                     "TSLA": 250.0, "NVDA": 135.0, "AMZN": 200.0,
+                     "SPX": 5450.0, "NDX": 18500.0}
+    _mock_spot: dict = {}   # tracks random-walk per ticker
+
     def get_spot(self, ticker: str) -> float:
-        _prices = {"SPY": 545.0, "QQQ": 470.0, "AAPL": 230.0,
-                    "TSLA": 250.0, "NVDA": 135.0, "AMZN": 200.0,
-                    "SPX": 5450.0, "NDX": 18500.0}
-        return _prices.get(ticker.upper(), 100.0)
+        base = self._base_prices.get(ticker.upper(), 100.0)
+        # Random walk: drift ±0.1% each call to simulate live price movement
+        import random
+        prev = self._mock_spot.get(ticker.upper(), base)
+        step = prev * random.gauss(0, 0.001)   # ~0.1% std dev per tick
+        new_price = prev + step
+        self._mock_spot[ticker.upper()] = new_price
+        return round(new_price, 2)
 
     def get_prev_day_hl(self, ticker: str) -> dict:
-        spot = self.get_spot(ticker)
-        return {"high": spot * 1.008, "low": spot * 0.992}
+        base = self._base_prices.get(ticker.upper(), 100.0)
+        return {"high": base * 1.008, "low": base * 0.992}
 
     def get_expiries(self, ticker: str) -> list[str]:
         today = dt.date.today()

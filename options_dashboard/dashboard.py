@@ -86,28 +86,58 @@ sidebar = html.Div(
 
         html.Hr(),
 
-        # ── Charm view toggle ────────────────────────────────────────
+        # ── Per-chart view modes ─────────────────────────────────────
+        dbc.Label("Gamma View", className="fw-bold",
+                  style={"fontSize": "0.80rem"}),
+        dbc.RadioItems(
+            id="radio-gamma-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-2",
+        ),
+
         dbc.Label("Charm View", className="fw-bold",
-                  style={"fontSize": "0.85rem"}),
+                  style={"fontSize": "0.80rem"}),
         dbc.RadioItems(
             id="radio-charm-view",
             options=[
-                {"label": "Bar Chart",  "value": "bar"},
-                {"label": "Heatmap",    "value": "heatmap"},
+                {"label": "Bar",     "value": "bar"},
+                {"label": "Heatmap", "value": "heatmap"},
+                {"label": "Values",  "value": "values"},
             ],
-            value="heatmap",
-            inline=True,
-            className="mb-3",
+            value="heatmap", inline=True, className="mb-2",
         ),
-        html.Div(
-            "Heatmap shows history + projected decay to close.",
-            className="text-muted",
-            style={"fontSize": "0.70rem", "fontStyle": "italic"},
+
+        dbc.Label("Vanna View", className="fw-bold",
+                  style={"fontSize": "0.80rem"}),
+        dbc.RadioItems(
+            id="radio-vanna-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-2",
+        ),
+
+        dbc.Label("Zomma View", className="fw-bold",
+                  style={"fontSize": "0.80rem"}),
+        dbc.RadioItems(
+            id="radio-zomma-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-2",
         ),
 
         html.Hr(),
         html.Div(id="status-text", className="text-muted",
                  style={"fontSize": "0.75rem", "whiteSpace": "pre-line"}),
+
+        # Hidden store for previous exposure values (for computing deltas)
+        dcc.Store(id="store-prev-exposure", data={}),
     ],
     style={
         "width": f"{SIDEBAR_WIDTH}px",
@@ -126,31 +156,32 @@ charts_panel = html.Div(
         # Left column: Gamma (full height)
         html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
-            style={"flex": 0.7, "minWidth": 0, "height": "100vh"},
+            style={"flex": 0.7, "minWidth": 0, "height": "100vh",
+                   "overflowY": "auto"},
         ),
         # Right column: Charm on top, Vanna+Zomma on bottom
         html.Div(
             [
                 html.Div(
                     dcc.Graph(id="chart-charm", style={"height": "100%"}),
-                    style={"flex": 7, "minHeight": 0},   # 70%
+                    style={"flex": 7, "minHeight": 0, "overflowY": "auto"},
                 ),
                 # Bottom row: Vanna + Zomma side by side
                 html.Div(
                     [
                         html.Div(
                             dcc.Graph(id="chart-vanna", style={"height": "100%"}),
-                            style={"flex": 2, "minWidth": 0},
+                            style={"flex": 1, "minWidth": 0, "overflowY": "auto"},
                         ),
                         html.Div(
                             dcc.Graph(id="chart-zomma", style={"height": "100%"}),
-                            style={"flex": 3, "minWidth": 0},
+                            style={"flex": 1, "minWidth": 0, "overflowY": "auto"},
                         ),
                     ],
                     style={
-                        "flex": 3,              # 30% of column height
+                        "flex": 3,
                         "minHeight": 0,
-                        "display": "flex",      # side by side
+                        "display": "flex",
                     },
                 ),
             ],
@@ -248,26 +279,31 @@ def on_mode_change(mode):
     Output("chart-zomma", "figure"),
     Output("status-text", "children"),
     Output("dropdown-expiry", "options", allow_duplicate=True),
+    Output("store-prev-exposure", "data"),
     Input("interval-poll", "n_intervals"),
+    Input("radio-gamma-view", "value"),
     Input("radio-charm-view", "value"),
+    Input("radio-vanna-view", "value"),
+    Input("radio-zomma-view", "value"),
+    State("store-prev-exposure", "data"),
     prevent_initial_call="initial_duplicate",
 )
-def poll_and_render(n, charm_view):
+def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, e, "Initialising...", dash.no_update
+        return e, e, e, e, "Initialising...", dash.no_update, dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, e, f"X  {error}", dash.no_update
+        return e, e, e, e, f"X  {error}", dash.no_update, dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, e, "Fetching from IB...", dash.no_update
+        return e, e, e, e, "Fetching from IB...", dash.no_update, dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -280,28 +316,51 @@ def poll_and_render(n, charm_view):
     # Previous day high/low from cache
     prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
 
-    # ── Gamma (bar) ──────────────────────────────────────────────────
-    fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
-                              "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
-                              lines=[
-                                  {"type": "exposure_max", "label": "Max Pos GEX",
-                                   "color": "#00ffcc", "side": "left"},
-                                  {"type": "exposure_min", "label": "Max Neg GEX",
-                                   "color": "#ff6b6b", "side": "left"},
-                                  {"type": "net_max", "label": "Max Net GEX",
-                                   "color": "#e0e0e0", "side": "left"},
-                                  {"type": "net_min", "label": "Min Net GEX",
-                                   "color": "#9e9e9e", "side": "left"},
-                                  {"type": "price", "value": prev_hl["high"],
-                                   "label": "Prev High",
-                                   "color": "#80cbc4", "side": "right"},
-                                  {"type": "price", "value": prev_hl["low"],
-                                   "label": "Prev Low",
-                                   "color": "#ef9a9a", "side": "right"},
-                              ])
+    # Previous exposure for computing deltas (from dcc.Store)
+    if prev_data is None:
+        prev_data = {}
+    prev_gamma = prev_data.get("gamma", {})
+    prev_charm = prev_data.get("charm", {})
+    prev_vanna = prev_data.get("vanna", {})
+    prev_zomma = prev_data.get("zomma", {})
 
-    # ── Charm (bar or heatmap) ───────────────────────────────────────
-    if charm_view == "heatmap":
+    # Save current values for next cycle
+    new_prev = {
+        "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
+        "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
+        "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
+        "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
+    }
+
+    # ── Gamma ────────────────────────────────────────────────────────
+    if gamma_view == "values":
+        fig_gamma = _build_value_view(exp_df, "strike", "gamma_exp",
+                                       "Gamma (GEX)", spot, prev_gamma)
+    else:
+        fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
+                                  "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos GEX",
+                                       "color": "#00ffcc", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg GEX",
+                                       "color": "#ff6b6b", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net GEX",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      {"type": "net_min", "label": "Min Net GEX",
+                                       "color": "#9e9e9e", "side": "left"},
+                                      {"type": "price", "value": prev_hl["high"],
+                                       "label": "Prev High",
+                                       "color": "#80cbc4", "side": "right"},
+                                      {"type": "price", "value": prev_hl["low"],
+                                       "label": "Prev Low",
+                                       "color": "#ef9a9a", "side": "right"},
+                                  ])
+
+    # ── Charm ────────────────────────────────────────────────────────
+    if charm_view == "values":
+        fig_charm = _build_value_view(exp_df, "strike", "charm_exp",
+                                       "Charm", spot, prev_charm)
+    elif charm_view == "heatmap":
         history = data_fetcher.data_manager.get_charm_history()
         fig_charm = _build_charm_heatmap(history, spot,
                                           chain=chain, greek_mode=mode)
@@ -320,35 +379,43 @@ def poll_and_render(n, charm_view):
                                   ],
                                   show_spot=False)
 
-    # ── Vanna (bar) ──────────────────────────────────────────────────
-    fig_vanna = _build_chart(exp_df, "strike", "vanna_exp",
-                              "Vanna", spot, "#a78bfa", "#fb923c",
-                              lines=[
-                                  {"type": "exposure_max", "label": "Max Pos Vanna",
-                                   "color": "#a78bfa", "side": "left"},
-                                  {"type": "exposure_min", "label": "Max Neg Vanna",
-                                   "color": "#fb923c", "side": "left"},
-                                  {"type": "net_max", "label": "Max Net Vanna",
-                                   "color": "#e0e0e0", "side": "left"},
-                                  {"type": "net_min", "label": "Min Net Vanna",
-                                   "color": "#9e9e9e", "side": "left"},
-                              ],
-                              compact=True)
+    # ── Vanna ────────────────────────────────────────────────────────
+    if vanna_view == "values":
+        fig_vanna = _build_value_view(exp_df, "strike", "vanna_exp",
+                                       "Vanna", spot, prev_vanna, compact=True)
+    else:
+        fig_vanna = _build_chart(exp_df, "strike", "vanna_exp",
+                                  "Vanna", spot, "#a78bfa", "#fb923c",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos Vanna",
+                                       "color": "#a78bfa", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg Vanna",
+                                       "color": "#fb923c", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net Vanna",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      {"type": "net_min", "label": "Min Net Vanna",
+                                       "color": "#9e9e9e", "side": "left"},
+                                  ],
+                                  compact=True)
 
-    # ── Zomma (bar) ──────────────────────────────────────────────────
-    fig_zomma = _build_chart(exp_df, "strike", "zomma_exp",
-                              "Zomma", spot, "#66bb6a", "#ef5350",
-                              lines=[
-                                  {"type": "exposure_max", "label": "Max Pos Zomma",
-                                   "color": "#66bb6a", "side": "left"},
-                                  {"type": "exposure_min", "label": "Max Neg Zomma",
-                                   "color": "#ef5350", "side": "left"},
-                                  {"type": "net_max", "label": "Max Net Zomma",
-                                   "color": "#e0e0e0", "side": "left"},
-                                  {"type": "net_min", "label": "Min Net Zomma",
-                                   "color": "#9e9e9e", "side": "left"},
-                              ],
-                              compact=True, show_spot=False)
+    # ── Zomma ────────────────────────────────────────────────────────
+    if zomma_view == "values":
+        fig_zomma = _build_value_view(exp_df, "strike", "zomma_exp",
+                                       "Zomma", spot, prev_zomma, compact=True)
+    else:
+        fig_zomma = _build_chart(exp_df, "strike", "zomma_exp",
+                                  "Zomma", spot, "#66bb6a", "#ef5350",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos Zomma",
+                                       "color": "#66bb6a", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg Zomma",
+                                       "color": "#ef5350", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net Zomma",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      {"type": "net_min", "label": "Min Net Zomma",
+                                       "color": "#9e9e9e", "side": "left"},
+                                  ],
+                                  compact=True, show_spot=False)
 
     # ── Status ───────────────────────────────────────────────────────
     nice_exp = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:]}"
@@ -376,7 +443,7 @@ def poll_and_render(n, charm_view):
     for e in expiries:
         opts.append({"label": f"{e[:4]}-{e[4:6]}-{e[6:]}", "value": e})
 
-    return fig_gamma, fig_charm, fig_vanna, fig_zomma, status, opts
+    return fig_gamma, fig_charm, fig_vanna, fig_zomma, status, opts, new_prev
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -515,6 +582,159 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
         showlegend=False,
     )
     return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  VALUE VIEW  —  text table with color gradient
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_value_view(df, x_col, y_col, title, spot, prev_values,
+                      compact=False):
+    """
+    Heatmap-style table: each row is a strike, coloured by exposure value.
+    Shows the value, change since last refresh, and change %.
+    """
+    df_sorted = df.sort_values(x_col, ascending=False).copy()
+
+    strikes = df_sorted[x_col].values
+    values  = df_sorted[y_col].values
+
+    n = len(strikes)
+    if n == 0:
+        return _empty_fig("No data")
+
+    # Identify special rows
+    max_pos_idx = int(np.argmax(values)) if np.any(values > 0) else -1
+    max_neg_idx = int(np.argmin(values)) if np.any(values < 0) else -1
+    max_net_idx = int(np.argmax(np.abs(values)))
+
+    # Spot row
+    spot_dists = np.abs(strikes - spot)
+    spot_idx = int(np.argmin(spot_dists))
+
+    # Build text for each cell (no badges — those go as annotations)
+    cell_text = []
+    for i in range(n):
+        s = strikes[i]
+        v = values[i]
+        prev_v = prev_values.get(str(s), None)
+
+        val_str = _fmt_value(v)
+
+        if prev_v is not None and prev_v != 0:
+            chg = v - prev_v
+            chg_pct = (chg / abs(prev_v)) * 100
+            sign = "+" if chg >= 0 else ""
+            cell_text.append(
+                f"${val_str}   {sign}{_fmt_value(chg)}  ({sign}{chg_pct:.1f}%)"
+            )
+        else:
+            cell_text.append(f"${val_str}")
+
+    # Single column z-values
+    z = values.reshape(-1, 1)
+    z_max = max(abs(np.nanmin(z)), abs(np.nanmax(z)), 1)
+
+    text_grid = [[t] for t in cell_text]
+
+    strike_labels = [f"{s:,.0f}" for s in strikes]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Heatmap(
+        z=z,
+        y=strike_labels,
+        x=[title],
+        text=text_grid,
+        texttemplate="%{text}",
+        textfont=dict(
+            size=10 if compact else 12,
+            family="monospace",
+            color="#ffffff",
+        ),
+        colorscale=[
+            [0.0,  "#7f0000"],
+            [0.15, "#b71c1c"],
+            [0.3,  "#5a1010"],
+            [0.45, "#2a0808"],
+            [0.5,  "#121212"],
+            [0.55, "#082a08"],
+            [0.7,  "#105a10"],
+            [0.85, "#1b8c1b"],
+            [1.0,  "#43a047"],
+        ],
+        zmin=-z_max,
+        zmax=z_max,
+        showscale=False,
+        hovertemplate="Strike: %{y}<br>%{text}<extra></extra>",
+        ygap=1,
+    ))
+
+    # ── Badge annotations on the left edge ───────────────────────────
+    sz = 11 if compact else 13
+    badge_map = {}
+    if max_pos_idx >= 0 and values[max_pos_idx] > 0:
+        badge_map.setdefault(max_pos_idx, []).append("▲")
+    if max_neg_idx >= 0 and values[max_neg_idx] < 0:
+        badge_map.setdefault(max_neg_idx, []).append("▼")
+    badge_map.setdefault(max_net_idx, []).append("◆")
+
+    for idx, badges in badge_map.items():
+        fig.add_annotation(
+            x=0, xref="paper",
+            y=strike_labels[idx], yref="y",
+            text=" ".join(badges),
+            showarrow=False,
+            font=dict(color="#ffffff", size=sz),
+            xanchor="left",
+            xshift=4,
+        )
+
+    # ── Spot price row highlight ─────────────────────────────────────
+    fig.add_shape(
+        type="rect",
+        x0=-0.5, x1=0.5,
+        y0=spot_idx - 0.5, y1=spot_idx + 0.5,
+        yref="y",
+        line=dict(color="#facc15", width=3),
+        fillcolor="rgba(0,0,0,0)",
+    )
+
+    margins = dict(l=55, r=10, t=25, b=10) if compact else dict(l=60, r=15, t=30, b=15)
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=margins,
+        title=dict(text=title, font=dict(size=11 if compact else 13),
+                   x=0.01, y=0.98),
+        xaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+        ),
+        yaxis=dict(
+            title=None,
+            showgrid=False,
+            type="category",
+            tickfont=dict(size=9 if compact else 10),
+        ),
+        showlegend=False,
+    )
+    return fig
+
+
+def _fmt_value(v):
+    """Format large numbers with K/M suffix."""
+    av = abs(v)
+    if av >= 1e9:
+        return f"{v/1e9:,.2f}B"
+    elif av >= 1e6:
+        return f"{v/1e6:,.2f}M"
+    elif av >= 1e3:
+        return f"{v/1e3:,.1f}K"
+    else:
+        return f"{v:,.0f}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
