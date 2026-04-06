@@ -18,7 +18,7 @@ from plotly.subplots import make_subplots
 
 from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
-from greek_calculator import compute_exposure
+from greek_calculator import compute_exposure, compute_market_metrics
 
 app = dash.Dash(
     __name__,
@@ -156,8 +156,7 @@ charts_panel = html.Div(
         # Left column: Gamma (full height)
         html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
-            style={"flex": 0.7, "minWidth": 0, "height": "100vh",
-                   "overflowY": "auto"},
+            style={"flex": 0.7, "minWidth": 0, "overflowY": "auto"},
         ),
         # Right column: Charm on top, Vanna+Zomma on bottom
         html.Div(
@@ -190,22 +189,53 @@ charts_panel = html.Div(
                 "minWidth": 0,
                 "display": "flex",
                 "flexDirection": "column",
-                "height": "100vh",
             },
         ),
     ],
     style={
         "display": "flex",
         "flex": 1,
-        "height": "100vh",
         "overflow": "hidden",
+    },
+)
+
+# ── Metrics header bar (populated by callback) ──────────────────────────────
+
+metrics_header = html.Div(
+    id="metrics-header",
+    children="Loading...",
+    style={
+        "display": "flex",
+        "alignItems": "center",
+        "padding": "4px 8px",
+        "borderBottom": "1px solid rgba(255,255,255,0.08)",
+        "backgroundColor": "rgba(0,0,0,0.3)",
+        "minHeight": "42px",
+        "flexShrink": 0,
+        "overflowX": "auto",
+        "whiteSpace": "nowrap",
+        "fontSize": "0.80rem",
     },
 )
 
 poll_timer = dcc.Interval(id="interval-poll", interval=2_000, n_intervals=0)
 
+# Main layout: Sidebar | (Header + Charts)
 app.layout = html.Div(
-    [poll_timer, sidebar, charts_panel],
+    [
+        poll_timer,
+        sidebar,
+        html.Div(
+            [metrics_header, charts_panel],
+            style={
+                "flex": 1,
+                "display": "flex",
+                "flexDirection": "column",
+                "height": "100vh",
+                "overflow": "hidden",
+            },
+        ),
+    ],
     style={"display": "flex", "height": "100vh", "overflow": "hidden"},
 )
 
@@ -277,6 +307,7 @@ def on_mode_change(mode):
     Output("chart-charm", "figure"),
     Output("chart-vanna", "figure"),
     Output("chart-zomma", "figure"),
+    Output("metrics-header", "children"),
     Output("status-text", "children"),
     Output("dropdown-expiry", "options", allow_duplicate=True),
     Output("store-prev-exposure", "data"),
@@ -291,19 +322,19 @@ def on_mode_change(mode):
 def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, e, "Initialising...", dash.no_update, dash.no_update
+        return e, e, e, e, "Loading...", "Initialising...", dash.no_update, dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, e, f"X  {error}", dash.no_update, dash.no_update
+        return e, e, e, e, "Error", f"X  {error}", dash.no_update, dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, e, "Fetching from IB...", dash.no_update, dash.no_update
+        return e, e, e, e, "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -417,7 +448,10 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                   ],
                                   compact=True, show_spot=False)
 
-    # ── Status ───────────────────────────────────────────────────────
+    # ── Metrics header ─────────────────────────────────────────────
+    metrics = compute_market_metrics(chain, spot)
+    prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
+
     nice_exp = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:]}"
     exp_date = dt.date(int(resolved[:4]), int(resolved[4:6]), int(resolved[6:]))
     dte = max((exp_date - dt.date.today()).days, 0)
@@ -443,7 +477,164 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     for e in expiries:
         opts.append({"label": f"{e[:4]}-{e[4:6]}-{e[6:]}", "value": e})
 
-    return fig_gamma, fig_charm, fig_vanna, fig_zomma, status, opts, new_prev
+    # Build the header children
+    header = _build_metrics_header(ticker, spot, metrics, prev_hl, dte, updated)
+
+    return fig_gamma, fig_charm, fig_vanna, fig_zomma, header, status, opts, new_prev
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  METRICS HEADER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _metric_cell(label, value, color="#ffffff", sub=None):
+    """Build one metric cell for the header bar."""
+    children = [
+        html.Div(label, style={
+            "fontSize": "0.60rem", "color": "#777", "lineHeight": "1",
+        }),
+        html.Div(value, style={
+            "fontSize": "0.85rem", "fontWeight": "bold", "color": color,
+            "fontFamily": "monospace", "lineHeight": "1.2",
+        }),
+    ]
+    if sub:
+        children.append(html.Div(sub, style={
+            "fontSize": "0.55rem", "color": "#999", "lineHeight": "1",
+        }))
+    return html.Div(children, style={
+        "display": "inline-block",
+        "padding": "2px 10px",
+        "textAlign": "center",
+        "borderRight": "1px solid rgba(255,255,255,0.06)",
+        "verticalAlign": "top",
+    })
+
+
+def _em_progress(label, spot, low, high, color_lo, color_hi):
+    """
+    Build an expected-move cell with a mini progress indicator
+    showing where spot sits between low and high.
+    """
+    total = high - low
+    if total <= 0:
+        pct = 50
+    else:
+        pct = max(0, min(100, ((spot - low) / total) * 100))
+
+    # Color based on position: green near center, yellow/red near edges
+    if 30 <= pct <= 70:
+        dot_color = "#66bb6a"
+    elif 15 <= pct <= 85:
+        dot_color = "#ffa726"
+    else:
+        dot_color = "#ef5350"
+
+    bar_style = {
+        "width": "100%",
+        "height": "4px",
+        "backgroundColor": "#333",
+        "borderRadius": "2px",
+        "position": "relative",
+        "marginTop": "2px",
+    }
+    dot_style = {
+        "position": "absolute",
+        "left": f"{pct}%",
+        "top": "-2px",
+        "width": "8px",
+        "height": "8px",
+        "borderRadius": "50%",
+        "backgroundColor": dot_color,
+        "transform": "translateX(-50%)",
+    }
+
+    return html.Div([
+        html.Div(label, style={
+            "fontSize": "0.60rem", "color": "#777", "lineHeight": "1",
+        }),
+        html.Div(
+            f"${low:,.1f}  —  ${high:,.1f}",
+            style={
+                "fontSize": "0.72rem", "fontFamily": "monospace",
+                "color": "#ccc", "lineHeight": "1.2",
+            },
+        ),
+        html.Div(
+            [html.Div(style=dot_style)],
+            style=bar_style,
+        ),
+    ], style={
+        "display": "inline-block",
+        "padding": "2px 10px",
+        "textAlign": "center",
+        "borderRight": "1px solid rgba(255,255,255,0.06)",
+        "verticalAlign": "top",
+        "minWidth": "120px",
+    })
+
+
+def _build_metrics_header(ticker, spot, metrics, prev_hl, dte, updated):
+    """Build the list of metric cells for the header bar."""
+    if not metrics:
+        return "No metrics"
+
+    iv = metrics.get("atm_iv", 0)
+    daily_em = metrics.get("daily_em", 0)
+    weekly_em = metrics.get("weekly_em", 0)
+    d_hi = metrics.get("daily_high", spot)
+    d_lo = metrics.get("daily_low", spot)
+    w_hi = metrics.get("weekly_high", spot)
+    w_lo = metrics.get("weekly_low", spot)
+    pc = metrics.get("pc_ratio", 0)
+
+    prev_hi = prev_hl.get("high", 0)
+    prev_lo = prev_hl.get("low", 0)
+
+    cells = [
+        # Ticker + spot
+        _metric_cell(ticker, f"${spot:,.2f}", color="#facc15"),
+
+        # ATM IV
+        _metric_cell("ATM IV", f"{iv * 100:.1f}%",
+                      color="#4dabf7"),
+
+        # Daily EM
+        _metric_cell("Daily EM (1σ)", f"±${daily_em:,.1f}",
+                      color="#a78bfa",
+                      sub=f"{daily_em / spot * 100:.2f}%"),
+
+        # Daily range with progress
+        _em_progress("Daily Range", spot, d_lo, d_hi, "#ef5350", "#66bb6a"),
+
+        # Weekly EM
+        _metric_cell("Weekly EM (1σ)", f"±${weekly_em:,.1f}",
+                      color="#a78bfa",
+                      sub=f"{weekly_em / spot * 100:.2f}%"),
+
+        # Weekly range with progress
+        _em_progress("Weekly Range", spot, w_lo, w_hi, "#ef5350", "#66bb6a"),
+
+        # Put/Call ratio
+        _metric_cell("P/C Ratio", f"{pc:.2f}",
+                      color="#66bb6a" if pc < 1.0 else "#ef5350"),
+
+        # Previous day H/L
+        _metric_cell("Prev High", f"${prev_hi:,.1f}",
+                      color="#80cbc4" if prev_hi > 0 else "#555",
+                      sub=f"{(spot - prev_hi) / prev_hi * 100:+.2f}%" if prev_hi > 0 else ""),
+        _metric_cell("Prev Low", f"${prev_lo:,.1f}",
+                      color="#ef9a9a" if prev_lo > 0 else "#555",
+                      sub=f"{(spot - prev_lo) / prev_lo * 100:+.2f}%" if prev_lo > 0 else ""),
+
+        # DTE
+        _metric_cell("DTE", f"{dte}d", color="#888"),
+
+        # Last update
+        _metric_cell("Updated", updated, color="#555"),
+    ]
+
+    return cells
 
 
 # ══════════════════════════════════════════════════════════════════════════════
