@@ -18,7 +18,7 @@ from plotly.subplots import make_subplots
 
 from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
-from greek_calculator import compute_exposure, compute_market_metrics
+from greek_calculator import compute_exposure, compute_live_metrics
 
 app = dash.Dash(
     __name__,
@@ -449,7 +449,10 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                   compact=True, show_spot=False)
 
     # ── Metrics header ─────────────────────────────────────────────
-    metrics = compute_market_metrics(chain, spot)
+    # Session metrics (locked at first fetch) from cache
+    session_metrics = cache.get("session_metrics", {})
+    # Live metrics (recomputed every refresh)
+    live_metrics = compute_live_metrics(chain, spot)
     prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
 
     nice_exp = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:]}"
@@ -477,8 +480,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     for e in expiries:
         opts.append({"label": f"{e[:4]}-{e[4:6]}-{e[6:]}", "value": e})
 
-    # Build the header children
-    header = _build_metrics_header(ticker, spot, metrics, prev_hl, dte, updated)
+    header = _build_metrics_header(ticker, spot, session_metrics,
+                                    live_metrics, prev_hl, dte, updated)
 
     return fig_gamma, fig_charm, fig_vanna, fig_zomma, header, status, opts, new_prev
 
@@ -574,43 +577,66 @@ def _em_progress(label, spot, low, high, color_lo, color_hi):
     })
 
 
-def _build_metrics_header(ticker, spot, metrics, prev_hl, dte, updated):
-    """Build the list of metric cells for the header bar."""
-    if not metrics:
+def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated):
+    """
+    Build the header bar cells.
+    session: locked at first fetch (EM, ranges)
+    live:    updated every refresh (IV, straddle, P/C)
+    """
+    if not session and not live:
         return "No metrics"
 
-    iv = metrics.get("atm_iv", 0)
-    daily_em = metrics.get("daily_em", 0)
-    weekly_em = metrics.get("weekly_em", 0)
-    d_hi = metrics.get("daily_high", spot)
-    d_lo = metrics.get("daily_low", spot)
-    w_hi = metrics.get("weekly_high", spot)
-    w_lo = metrics.get("weekly_low", spot)
-    pc = metrics.get("pc_ratio", 0)
+    # Session metrics (frozen)
+    open_iv    = session.get("open_iv", 0)
+    daily_em   = session.get("daily_em", 0)
+    weekly_em  = session.get("weekly_em", 0)
+    d_hi       = session.get("daily_high", spot)
+    d_lo       = session.get("daily_low", spot)
+    w_hi       = session.get("weekly_high", spot)
+    w_lo       = session.get("weekly_low", spot)
+    open_spot  = session.get("open_spot", spot)
+
+    # Live metrics (updating)
+    live_iv    = live.get("atm_iv", 0)
+    straddle   = live.get("straddle", 0)
+    pc         = live.get("pc_ratio", 0)
 
     prev_hi = prev_hl.get("high", 0)
     prev_lo = prev_hl.get("low", 0)
 
+    # IV change from open
+    iv_chg = ""
+    if open_iv > 0 and live_iv > 0:
+        diff = (live_iv - open_iv) * 100
+        iv_chg = f"{diff:+.1f}pts"
+
     cells = [
         # Ticker + spot
-        _metric_cell(ticker, f"${spot:,.2f}", color="#facc15"),
+        _metric_cell(ticker, f"${spot:,.2f}", color="#facc15",
+                      sub=f"Open ${open_spot:,.1f}" if open_spot else ""),
 
-        # ATM IV
-        _metric_cell("ATM IV", f"{iv * 100:.1f}%",
-                      color="#4dabf7"),
+        # Live ATM IV + change from open
+        _metric_cell("ATM IV (live)", f"{live_iv * 100:.1f}%",
+                      color="#4dabf7",
+                      sub=f"Open {open_iv * 100:.1f}%  {iv_chg}"),
 
-        # Daily EM
+        # Straddle price
+        _metric_cell("ATM Straddle", f"${straddle:,.2f}",
+                      color="#ffd54f",
+                      sub=f"{straddle / spot * 100:.2f}% of spot"),
+
+        # Daily EM (locked)
         _metric_cell("Daily EM (1σ)", f"±${daily_em:,.1f}",
                       color="#a78bfa",
-                      sub=f"{daily_em / spot * 100:.2f}%"),
+                      sub=f"{daily_em / open_spot * 100:.2f}%  (locked)"),
 
         # Daily range with progress
         _em_progress("Daily Range", spot, d_lo, d_hi, "#ef5350", "#66bb6a"),
 
-        # Weekly EM
+        # Weekly EM (locked)
         _metric_cell("Weekly EM (1σ)", f"±${weekly_em:,.1f}",
                       color="#a78bfa",
-                      sub=f"{weekly_em / spot * 100:.2f}%"),
+                      sub=f"{weekly_em / open_spot * 100:.2f}%  (locked)"),
 
         # Weekly range with progress
         _em_progress("Weekly Range", spot, w_lo, w_hi, "#ef5350", "#66bb6a"),

@@ -153,18 +153,63 @@ def compute_exposure(chain_df, spot, greek_mode="oi"):
 
 # ── market metrics from option chain ─────────────────────────────────────────
 
-def compute_market_metrics(chain_df, spot):
-    """
-    Compute key market metrics from the option chain:
-    - ATM implied volatility (average of nearest call & put IV)
-    - Daily expected move  = spot × IV × sqrt(1/252)
-    - Weekly expected move  = spot × IV × sqrt(5/252)
-    - Expected move boundaries (spot ± EM)
-    - How close spot is to ±1σ daily and weekly levels (as % of EM used)
-    - Put/Call ratio (OI-weighted)
-    - Net GEX (sum of all gamma exposure)
+def _bs_call_price(S, K, T, sigma, r=RISK_FREE_RATE):
+    """Black-Scholes call price."""
+    d1 = _d1(S, K, T, sigma, r)
+    d2 = _d2(S, K, T, sigma, r)
+    return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
 
-    Returns a dict of metrics.
+
+def _bs_put_price(S, K, T, sigma, r=RISK_FREE_RATE):
+    """Black-Scholes put price."""
+    d1 = _d1(S, K, T, sigma, r)
+    d2 = _d2(S, K, T, sigma, r)
+    return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+
+def compute_session_metrics(chain_df, spot):
+    """
+    Compute metrics that should be LOCKED at session open (computed once):
+    - ATM IV at open
+    - Daily EM = prev_close × IV × sqrt(1/252)
+    - Weekly EM = prev_close × IV × sqrt(5/252)
+    - Boundaries (spot_at_open ± EM)
+
+    These use the opening IV snapshot and don't change during the session.
+    """
+    df = chain_df.copy()
+    if df.empty:
+        return {}
+
+    K = df["strike"].values.astype(float)
+    atm_idx = int(np.argmin(np.abs(K - spot)))
+    atm_call_iv = float(df.iloc[atm_idx]["call_iv"])
+    atm_put_iv  = float(df.iloc[atm_idx]["put_iv"])
+    atm_iv = (atm_call_iv + atm_put_iv) / 2.0
+    if atm_iv <= 0:
+        atm_iv = 0.20
+
+    daily_em  = spot * atm_iv * np.sqrt(1 / 252)
+    weekly_em = spot * atm_iv * np.sqrt(5 / 252)
+
+    return {
+        "open_spot":    spot,
+        "open_iv":      atm_iv,
+        "daily_em":     daily_em,
+        "daily_high":   spot + daily_em,
+        "daily_low":    spot - daily_em,
+        "weekly_em":    weekly_em,
+        "weekly_high":  spot + weekly_em,
+        "weekly_low":   spot - weekly_em,
+    }
+
+
+def compute_live_metrics(chain_df, spot):
+    """
+    Compute metrics that update live every refresh:
+    - Current ATM IV
+    - ATM straddle price (call + put from Black-Scholes)
+    - Put/Call OI ratio
     """
     df = chain_df.copy()
     if df.empty:
@@ -173,49 +218,43 @@ def compute_market_metrics(chain_df, spot):
     K = df["strike"].values.astype(float)
     T = df["dte_years"].values[0] if len(df) > 0 else 1/365
 
-    # Find ATM strike (closest to spot)
     atm_idx = int(np.argmin(np.abs(K - spot)))
     atm_strike = K[atm_idx]
     atm_call_iv = float(df.iloc[atm_idx]["call_iv"])
     atm_put_iv  = float(df.iloc[atm_idx]["put_iv"])
     atm_iv = (atm_call_iv + atm_put_iv) / 2.0
     if atm_iv <= 0:
-        atm_iv = 0.20  # fallback
+        atm_iv = 0.20
 
-    # Expected moves (1σ)
-    daily_em  = spot * atm_iv * np.sqrt(1 / 252)
-    weekly_em = spot * atm_iv * np.sqrt(5 / 252)
+    T = max(T, 1e-6)
 
-    # Daily boundaries
-    daily_high = spot + daily_em
-    daily_low  = spot - daily_em
-
-    # Weekly boundaries
-    weekly_high = spot + weekly_em
-    weekly_low  = spot - weekly_em
+    # ATM straddle = call + put theoretical price
+    call_price = float(_bs_call_price(spot, atm_strike, T, atm_call_iv))
+    put_price  = float(_bs_put_price(spot, atm_strike, T, atm_put_iv))
+    straddle   = call_price + put_price
 
     # Put/Call OI ratio
     total_call_oi = df["call_oi"].sum()
     total_put_oi  = df["put_oi"].sum()
     pc_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else 0
 
-    # DTE
-    dte_days = max(T * 365, 0)
-
     return {
-        "atm_strike":   atm_strike,
-        "atm_iv":       atm_iv,
-        "daily_em":     daily_em,
-        "daily_high":   daily_high,
-        "daily_low":    daily_low,
-        "weekly_em":    weekly_em,
-        "weekly_high":  weekly_high,
-        "weekly_low":   weekly_low,
-        "pc_ratio":     pc_ratio,
+        "atm_strike":    atm_strike,
+        "atm_iv":        atm_iv,
+        "straddle":      straddle,
+        "call_price":    call_price,
+        "put_price":     put_price,
+        "pc_ratio":      pc_ratio,
         "total_call_oi": total_call_oi,
         "total_put_oi":  total_put_oi,
-        "dte_days":     dte_days,
     }
+
+
+def compute_market_metrics(chain_df, spot):
+    """Legacy wrapper — returns combined metrics dict."""
+    session = compute_session_metrics(chain_df, spot)
+    live = compute_live_metrics(chain_df, spot)
+    return {**session, **live}
 
 
 # ── charm projection across time ─────────────────────────────────────────────

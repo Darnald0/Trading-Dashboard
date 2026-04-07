@@ -397,10 +397,12 @@ class DataManager:
         self._running = False
         self._thread: threading.Thread | None = None
         # ── History for charm heatmap ────────────────────────────────────
-        # Each entry: {"time": datetime, "spot": float, "charm": {strike: value}}
         self._charm_history: list[dict] = []
-        self._history_ticker: str = ""      # reset history when ticker changes
-        self._MAX_HISTORY = 500             # ~4 hours at 30s refresh
+        self._history_ticker: str = ""
+        self._MAX_HISTORY = 500
+        # ── Session metrics (locked on first fetch per ticker) ───────────
+        self._session_metrics: dict = {}
+        self._session_ticker: str = ""
 
     def start(self):
         self._running = True
@@ -424,9 +426,11 @@ class DataManager:
         self._refresh_now.set()
 
     def clear_history(self):
-        """Called when the user switches ticker."""
+        """Called when the user switches ticker or expiry."""
         with self._lock:
             self._charm_history.clear()
+            self._session_metrics = {}
+            self._session_ticker = ""
 
     def _worker(self):
         loop = asyncio.new_event_loop()
@@ -463,6 +467,18 @@ class DataManager:
             prev_hl = fetcher.get_prev_day_hl(ticker)
             print(f"  Prev day: H={prev_hl['high']:.2f}  L={prev_hl['low']:.2f}")
 
+        # ── Lock session metrics on FIRST fetch per ticker ───────────
+        # Daily/weekly EM computed once from opening IV, then frozen
+        if chain is not None and not chain.empty:
+            if ticker != self._session_ticker or not self._session_metrics:
+                from greek_calculator import compute_session_metrics
+                sm = compute_session_metrics(chain, spot)
+                self._session_metrics = sm
+                self._session_ticker = ticker
+                print(f"  Session metrics locked: IV={sm.get('open_iv', 0)*100:.1f}%  "
+                      f"Daily EM=±${sm.get('daily_em', 0):,.1f}  "
+                      f"Weekly EM=±${sm.get('weekly_em', 0):,.1f}")
+
         # ── Compute charm per strike for the heatmap history ─────────
         now = dt.datetime.now(tz=ET)
         charm_snapshot = {}
@@ -485,19 +501,19 @@ class DataManager:
                     "spot": spot,
                     "charm": charm_snapshot,
                 })
-                # Trim to max
                 if len(self._charm_history) > self._MAX_HISTORY:
                     self._charm_history = self._charm_history[-self._MAX_HISTORY:]
 
             self._cache = {
-                "ticker":      ticker,
-                "spot":        spot,
-                "expiry":      resolved,
-                "expiries":    expiries,
-                "chain":       chain,
-                "prev_day_hl": prev_hl,
-                "error":       None,
-                "timestamp":   time.time(),
+                "ticker":          ticker,
+                "spot":            spot,
+                "expiry":          resolved,
+                "expiries":        expiries,
+                "chain":           chain,
+                "prev_day_hl":     prev_hl,
+                "session_metrics": dict(self._session_metrics),
+                "error":           None,
+                "timestamp":       time.time(),
             }
 
 
