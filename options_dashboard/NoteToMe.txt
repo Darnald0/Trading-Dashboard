@@ -1,0 +1,9 @@
+info headline keep changing. Should be fixed for some info like range
+remove now line from charm heatmap
+make close to 0 sligly brighter on charm heatmap
+add a opening price line on chart
+make charm heatmap have less strike price
+strike price is inverted in value mode
+previous candle on charm heatmap doesn't appear ?
+charm heatmap is wrong
+on the values charts, the change % amount only get displayed shortly before going back to 0% is it possible because the cahrt keep updating and resenting ?

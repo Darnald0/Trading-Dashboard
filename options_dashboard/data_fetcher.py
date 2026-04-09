@@ -189,27 +189,51 @@ class IBDataFetcher:
         if not strikes:
             return pd.DataFrame()
 
-        # Build option contracts WITH tradingClass so IB can find them
+        # Qualify calls first to discover which strikes actually exist
+        # for this expiry (SPXW 0DTE only has $5 strikes near ATM,
+        # $25 increments further out — chain definition over-reports)
+        import io, contextlib
+
         call_contracts = []
-        put_contracts = []
         for s in strikes:
             call_contracts.append(
                 Option(ticker, expiry, s, "C", exchange,
                        multiplier=multiplier, currency="USD",
                        tradingClass=trading_class)
             )
+
+        # Suppress IB "Unknown contract" / "Error 200" noise during
+        # qualification — these are expected for strikes that don't
+        # exist on this specific expiry
+        _devnull = io.StringIO()
+        with contextlib.redirect_stdout(_devnull), \
+             contextlib.redirect_stderr(_devnull):
+            self.ib.qualifyContracts(*call_contracts)
+            self.ib.sleep(0.5)  # let error messages flush
+
+        # Only build puts for strikes where the call was valid
+        valid_strikes = [c.strike for c in call_contracts if c.conId != 0]
+        skipped = len(strikes) - len(valid_strikes)
+
+        put_contracts = []
+        for s in valid_strikes:
             put_contracts.append(
                 Option(ticker, expiry, s, "P", exchange,
                        multiplier=multiplier, currency="USD",
                        tradingClass=trading_class)
             )
 
-        all_contracts = call_contracts + put_contracts
-        self.ib.qualifyContracts(*all_contracts)
+        with contextlib.redirect_stdout(_devnull), \
+             contextlib.redirect_stderr(_devnull):
+            self.ib.qualifyContracts(*put_contracts)
+            self.ib.sleep(0.5)
 
-        # Keep only contracts IB recognised
-        valid = [c for c in all_contracts if c.conId != 0]
-        print(f"  Qualified {len(valid)} / {len(all_contracts)} contracts")
+        valid = [c for c in call_contracts + put_contracts if c.conId != 0]
+        if skipped:
+            print(f"  Qualified {len(valid)} contracts "
+                  f"({skipped} strikes skipped — not listed for this expiry)")
+        else:
+            print(f"  Qualified {len(valid)} contracts")
 
         if not valid:
             return pd.DataFrame()
@@ -468,16 +492,76 @@ class DataManager:
             print(f"  Prev day: H={prev_hl['high']:.2f}  L={prev_hl['low']:.2f}")
 
         # ── Lock session metrics on FIRST fetch per ticker ───────────
-        # Daily/weekly EM computed once from opening IV, then frozen
+        # Uses previous close IV from file for daily EM,
+        # and last Friday close IV for weekly EM.
         if chain is not None and not chain.empty:
+            from greek_calculator import compute_live_metrics
+            import session_store
+
+            live = compute_live_metrics(chain, spot)
+            current_iv = live.get("atm_iv", 0)
+
+            # Save current IV to file (for tomorrow's prev close)
+            if current_iv > 0:
+                session_store.save_current_iv(ticker, spot, current_iv)
+
+            # Compute session metrics only once per ticker
             if ticker != self._session_ticker or not self._session_metrics:
-                from greek_calculator import compute_session_metrics
-                sm = compute_session_metrics(chain, spot)
-                self._session_metrics = sm
+                import numpy as _np
+
+                prev_close = session_store.get_prev_close(ticker)
+                weekly_close = session_store.get_weekly_close(ticker)
+
+                # Daily EM from previous close IV
+                if prev_close:
+                    pc_spot = prev_close["spot"]
+                    pc_iv   = prev_close["iv"]
+                    daily_em = pc_spot * pc_iv * _np.sqrt(1 / 252)
+                    daily_hi = pc_spot + daily_em
+                    daily_lo = pc_spot - daily_em
+                    print(f"  Daily EM from prev close ({prev_close['timestamp']}): "
+                          f"IV={pc_iv*100:.1f}%  ±${daily_em:,.1f}")
+                else:
+                    # No history yet — use current as fallback
+                    daily_em = spot * current_iv * _np.sqrt(1 / 252)
+                    daily_hi = spot + daily_em
+                    daily_lo = spot - daily_em
+                    pc_spot = spot
+                    pc_iv = current_iv
+                    print(f"  Daily EM fallback (no prev close): ±${daily_em:,.1f}")
+
+                # Weekly EM from last Friday close IV
+                if weekly_close:
+                    wc_spot = weekly_close["spot"]
+                    wc_iv   = weekly_close["iv"]
+                    weekly_em = wc_spot * wc_iv * _np.sqrt(5 / 252)
+                    weekly_hi = wc_spot + weekly_em
+                    weekly_lo = wc_spot - weekly_em
+                    print(f"  Weekly EM from Friday close ({weekly_close['timestamp']}): "
+                          f"IV={wc_iv*100:.1f}%  ±${weekly_em:,.1f}")
+                else:
+                    weekly_em = spot * current_iv * _np.sqrt(5 / 252)
+                    weekly_hi = spot + weekly_em
+                    weekly_lo = spot - weekly_em
+                    wc_spot = spot
+                    wc_iv = current_iv
+                    print(f"  Weekly EM fallback (no Friday close): ±${weekly_em:,.1f}")
+
+                self._session_metrics = {
+                    "prev_close_spot": pc_spot,
+                    "prev_close_iv":   pc_iv,
+                    "prev_close_ts":   prev_close.get("timestamp", "now"),
+                    "daily_em":        daily_em,
+                    "daily_high":      daily_hi,
+                    "daily_low":       daily_lo,
+                    "weekly_close_spot": weekly_close.get("spot", wc_spot),
+                    "weekly_close_iv":   weekly_close.get("iv", wc_iv),
+                    "weekly_close_ts":   weekly_close.get("timestamp", "now"),
+                    "weekly_em":       weekly_em,
+                    "weekly_high":     weekly_hi,
+                    "weekly_low":      weekly_lo,
+                }
                 self._session_ticker = ticker
-                print(f"  Session metrics locked: IV={sm.get('open_iv', 0)*100:.1f}%  "
-                      f"Daily EM=±${sm.get('daily_em', 0):,.1f}  "
-                      f"Weekly EM=±${sm.get('weekly_em', 0):,.1f}")
 
         # ── Compute charm per strike for the heatmap history ─────────
         now = dt.datetime.now(tz=ET)

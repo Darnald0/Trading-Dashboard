@@ -580,70 +580,78 @@ def _em_progress(label, spot, low, high, color_lo, color_hi):
 def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated):
     """
     Build the header bar cells.
-    session: locked at first fetch (EM, ranges)
+    session: locked from prev close file (EM, ranges)
     live:    updated every refresh (IV, straddle, P/C)
     """
     if not session and not live:
         return "No metrics"
 
-    # Session metrics (frozen)
-    open_iv    = session.get("open_iv", 0)
+    # Session metrics (from prev close file — frozen for the day)
+    pc_spot    = session.get("prev_close_spot", spot)
+    pc_iv      = session.get("prev_close_iv", 0)
+    pc_ts      = session.get("prev_close_ts", "")
     daily_em   = session.get("daily_em", 0)
-    weekly_em  = session.get("weekly_em", 0)
     d_hi       = session.get("daily_high", spot)
     d_lo       = session.get("daily_low", spot)
+
+    wc_iv      = session.get("weekly_close_iv", 0)
+    wc_ts      = session.get("weekly_close_ts", "")
+    weekly_em  = session.get("weekly_em", 0)
     w_hi       = session.get("weekly_high", spot)
     w_lo       = session.get("weekly_low", spot)
-    open_spot  = session.get("open_spot", spot)
 
     # Live metrics (updating)
     live_iv    = live.get("atm_iv", 0)
     straddle   = live.get("straddle", 0)
-    pc         = live.get("pc_ratio", 0)
+    pc_ratio   = live.get("pc_ratio", 0)
 
     prev_hi = prev_hl.get("high", 0)
     prev_lo = prev_hl.get("low", 0)
 
-    # IV change from open
+    # IV change from prev close
     iv_chg = ""
-    if open_iv > 0 and live_iv > 0:
-        diff = (live_iv - open_iv) * 100
+    if pc_iv > 0 and live_iv > 0:
+        diff = (live_iv - pc_iv) * 100
         iv_chg = f"{diff:+.1f}pts"
+
+    # Format source timestamps
+    daily_src = f"@ {pc_ts}" if pc_ts else "fallback"
+    weekly_src = f"@ {wc_ts}" if wc_ts else "fallback"
 
     cells = [
         # Ticker + spot
         _metric_cell(ticker, f"${spot:,.2f}", color="#facc15",
-                      sub=f"Open ${open_spot:,.1f}" if open_spot else ""),
+                      sub=f"Prev close ${pc_spot:,.1f}"),
 
-        # Live ATM IV + change from open
+        # Live ATM IV + change from prev close
         _metric_cell("ATM IV (live)", f"{live_iv * 100:.1f}%",
                       color="#4dabf7",
-                      sub=f"Open {open_iv * 100:.1f}%  {iv_chg}"),
+                      sub=f"Prev {pc_iv * 100:.1f}%  {iv_chg}"),
 
         # Straddle price
         _metric_cell("ATM Straddle", f"${straddle:,.2f}",
                       color="#ffd54f",
-                      sub=f"{straddle / spot * 100:.2f}% of spot"),
+                      sub=f"{straddle / spot * 100:.2f}% of spot" if spot > 0 else ""),
 
-        # Daily EM (locked)
+        # Daily EM (from prev close)
         _metric_cell("Daily EM (1σ)", f"±${daily_em:,.1f}",
                       color="#a78bfa",
-                      sub=f"{daily_em / open_spot * 100:.2f}%  (locked)"),
+                      sub=f"{daily_em / pc_spot * 100:.2f}%  {daily_src}" if pc_spot > 0 else ""),
 
         # Daily range with progress
         _em_progress("Daily Range", spot, d_lo, d_hi, "#ef5350", "#66bb6a"),
 
-        # Weekly EM (locked)
+        # Weekly EM (from Friday close)
         _metric_cell("Weekly EM (1σ)", f"±${weekly_em:,.1f}",
                       color="#a78bfa",
-                      sub=f"{weekly_em / open_spot * 100:.2f}%  (locked)"),
+                      sub=f"{weekly_em / pc_spot * 100:.2f}%  {weekly_src}" if pc_spot > 0 else ""),
 
         # Weekly range with progress
         _em_progress("Weekly Range", spot, w_lo, w_hi, "#ef5350", "#66bb6a"),
 
         # Put/Call ratio
-        _metric_cell("P/C Ratio", f"{pc:.2f}",
-                      color="#66bb6a" if pc < 1.0 else "#ef5350"),
+        _metric_cell("P/C Ratio", f"{pc_ratio:.2f}",
+                      color="#66bb6a" if pc_ratio < 1.0 else "#ef5350"),
 
         # Previous day H/L
         _metric_cell("Prev High", f"${prev_hi:,.1f}",
