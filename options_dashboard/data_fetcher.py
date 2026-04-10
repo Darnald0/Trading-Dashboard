@@ -502,7 +502,8 @@ class DataManager:
             current_iv = live.get("atm_iv", 0)
 
             # Save current IV to file (for tomorrow's prev close)
-            if current_iv > 0:
+            # Skip in mock mode to avoid corrupting live data
+            if current_iv > 0 and not self._use_mock:
                 session_store.save_current_iv(ticker, spot, current_iv)
 
             # Compute session metrics only once per ticker

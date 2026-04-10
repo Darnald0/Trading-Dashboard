@@ -163,7 +163,7 @@ charts_panel = html.Div(
             [
                 html.Div(
                     dcc.Graph(id="chart-charm", style={"height": "100%"}),
-                    style={"flex": 7, "minHeight": 0, "overflowY": "auto"},
+                    style={"flex": 7, "minHeight": 0},
                 ),
                 # Bottom row: Vanna + Zomma side by side
                 html.Div(
@@ -786,6 +786,7 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=margins,
+        uirevision="keep",              # preserve zoom/pan across refreshes
         title=dict(text=title, font=dict(size=11 if compact else 13),
                    x=0.01, y=0.97),
         xaxis=dict(
@@ -803,7 +804,9 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
             title_font=dict(size=10),
             dtick=10 if compact else 5,
             tickfont=dict(size=9 if compact else 11),
+            fixedrange=False,           # allow vertical zoom/pan
         ),
+        dragmode="zoom",
         showlegend=False,
     )
     return fig
@@ -932,6 +935,7 @@ def _build_value_view(df, x_col, y_col, title, spot, prev_values,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=margins,
+        uirevision="keep",
         title=dict(text=title, font=dict(size=11 if compact else 13),
                    x=0.01, y=0.98),
         xaxis=dict(
@@ -943,6 +947,7 @@ def _build_value_view(df, x_col, y_col, title, spot, prev_values,
             showgrid=False,
             type="category",
             tickfont=dict(size=9 if compact else 10),
+            fixedrange=False,
         ),
         showlegend=False,
     )
@@ -1071,20 +1076,6 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
             secondary_y=True,
         )
 
-    # "NOW" line
-    fig.add_shape(
-        type="line", x0=now_clamped, x1=now_clamped,
-        y0=0, y1=1, yref="paper",
-        line=dict(color="#ffffff", width=2, dash="dot"),
-    )
-    fig.add_annotation(
-        x=now_clamped, y=1, yref="paper",
-        text="  NOW  ", showarrow=False,
-        font=dict(color="#ffffff", size=9, family="monospace"),
-        bgcolor="rgba(255,255,255,0.15)",
-        xanchor="center", yanchor="bottom",
-    )
-
     # Max Pos / Max Neg / Net charm lines (from the "now" column of the grid)
     now_col = z_raw[:, now_idx] if now_idx < z_raw.shape[1] else z_raw[:, -1]
     pos_idx = int(np.argmax(now_col))
@@ -1135,7 +1126,7 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
                        font=dict(color="#9e9e9e", size=8),
                        xanchor="left", yshift=-8)
 
-    # Layout
+    # Layout — Y-axis is zoomable/pannable (drag to stretch vertically)
     s_min, s_max = min(strikes), max(strikes)
     pad = (s_max - s_min) * 0.05
     y_range = [s_min - pad, s_max + pad]
@@ -1145,6 +1136,7 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=55, r=60, t=30, b=30),
+        uirevision="keep",
         title=dict(text="Charm Decay Heatmap", font=dict(size=13),
                    x=0.01, y=0.98),
         xaxis=dict(
@@ -1157,11 +1149,14 @@ def _build_charm_heatmap(history, spot, chain=None, greek_mode="oi"):
             tickformat="%H:%M",
         ),
         yaxis=dict(title="Strike", gridcolor="rgba(255,255,255,0.06)",
-                   title_font=dict(size=10), range=y_range, dtick=5),
+                   title_font=dict(size=10), range=y_range, dtick=5,
+                   fixedrange=False),     # allow vertical drag to zoom
         yaxis2=dict(range=y_range, showgrid=False,
-                    showticklabels=False, overlaying="y"),
+                    showticklabels=False, overlaying="y",
+                    fixedrange=False),
         showlegend=False,
         xaxis_rangeslider_visible=False,
+        dragmode="zoom",                  # default drag = zoom (like TradingView)
     )
 
     return fig
@@ -1215,6 +1210,7 @@ def _empty_fig(msg="No data"):
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=55, r=40, t=30, b=30),
+        uirevision="keep",
     )
     return fig
 
