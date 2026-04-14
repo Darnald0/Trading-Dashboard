@@ -79,6 +79,8 @@ sidebar = html.Div(
                 {"label": "Open Interest",    "value": "oi"},
                 {"label": "Session Volume",   "value": "volume"},
                 {"label": "Combined (OI+Vol)", "value": "combined"},
+                {"label": "Flow (Dealer)",    "value": "flow"},
+                {"label": "OI + Flow (Live)", "value": "oi_flow"},
             ],
             value=SETTINGS.greek_mode,
             className="mb-3",
@@ -149,14 +151,14 @@ sidebar = html.Div(
     },
 )
 
-# Layout:  Sidebar | Gamma | Charm (top 70%)
-#                          | Vanna | Zomma  (bottom 30%, side by side)
+# Layout:  Sidebar | Gamma       | Charm (70%)
+#                                | Vanna | Zomma (30%)
 charts_panel = html.Div(
     [
         # Left column: Gamma (full height)
         html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
-            style={"flex": 0.7, "minWidth": 0, "overflowY": "auto"},
+            style={"flex": 0.7, "minWidth": 0},
         ),
         # Right column: Charm on top, Vanna+Zomma on bottom
         html.Div(
@@ -342,10 +344,36 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     expiries = cache.get("expiries", [])
     mode     = SETTINGS.greek_mode
 
-    exp_df = compute_exposure(chain, spot, greek_mode=mode)
+    # Flow data (available for all modes, used by flow/oi_flow)
+    import pandas as pd
+    flow_chain = cache.get("flow_chain", pd.DataFrame())
+    oi_flow_chain = cache.get("oi_flow_chain", pd.DataFrame())
+    flow_stats = cache.get("flow_stats", {})
+
+    # Compute exposure based on selected mode
+    if mode == "flow":
+        if flow_chain is not None and not flow_chain.empty:
+            exp_df = compute_exposure(flow_chain, spot, greek_mode="oi")
+        else:
+            exp_df = pd.DataFrame({
+                "strike": [], "gamma_exp": [], "charm_exp": [],
+                "vanna_exp": [], "zomma_exp": [],
+            })
+    elif mode == "oi_flow":
+        if oi_flow_chain is not None and not oi_flow_chain.empty:
+            exp_df = compute_exposure(oi_flow_chain, spot, greek_mode="oi")
+        else:
+            # Fall back to plain OI until flow data arrives
+            exp_df = compute_exposure(chain, spot, greek_mode="oi")
+    else:
+        exp_df = compute_exposure(chain, spot, greek_mode=mode)
 
     # Previous day high/low from cache
     prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
+
+    # Session metrics (locked at first fetch)
+    session_metrics = cache.get("session_metrics", {})
+    open_spot = session_metrics.get("open_spot", 0)
 
     # Previous exposure for computing deltas (from dcc.Store)
     if prev_data is None:
@@ -363,10 +391,15 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
         "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
     }
 
+    # Common open price line for bar charts
+    open_line = {"type": "price", "value": open_spot,
+                 "label": "Open", "color": "#29b6f6", "side": "right"}
+
     # ── Gamma ────────────────────────────────────────────────────────
     if gamma_view == "values":
         fig_gamma = _build_value_view(exp_df, "strike", "gamma_exp",
-                                       "Gamma (GEX)", spot, prev_gamma)
+                                       "Gamma (GEX)", spot, prev_gamma,
+                                       open_price=open_spot)
     else:
         fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
                                   "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
@@ -385,16 +418,26 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                       {"type": "price", "value": prev_hl["low"],
                                        "label": "Prev Low",
                                        "color": "#ef9a9a", "side": "right"},
+                                      open_line,
                                   ])
 
     # ── Charm ────────────────────────────────────────────────────────
     if charm_view == "values":
         fig_charm = _build_value_view(exp_df, "strike", "charm_exp",
-                                       "Charm", spot, prev_charm)
+                                       "Charm", spot, prev_charm,
+                                       open_price=open_spot)
     elif charm_view == "heatmap":
         history = data_fetcher.data_manager.get_charm_history()
-        fig_charm = _build_charm_heatmap(history, spot,
-                                          chain=chain, greek_mode=mode)
+        # In flow/oi_flow mode, project charm from the appropriate chain
+        if mode == "flow" and flow_chain is not None and not flow_chain.empty:
+            fig_charm = _build_charm_heatmap(history, spot,
+                                              chain=flow_chain, greek_mode="oi")
+        elif mode == "oi_flow" and oi_flow_chain is not None and not oi_flow_chain.empty:
+            fig_charm = _build_charm_heatmap(history, spot,
+                                              chain=oi_flow_chain, greek_mode="oi")
+        else:
+            fig_charm = _build_charm_heatmap(history, spot,
+                                              chain=chain, greek_mode=mode)
     else:
         fig_charm = _build_chart(exp_df, "strike", "charm_exp",
                                   "Charm", spot, "#4dabf7", "#f783ac",
@@ -407,13 +450,15 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#e0e0e0", "side": "left"},
                                       {"type": "net_min", "label": "Min Net Charm",
                                        "color": "#9e9e9e", "side": "left"},
+                                      open_line,
                                   ],
                                   show_spot=False)
 
     # ── Vanna ────────────────────────────────────────────────────────
     if vanna_view == "values":
         fig_vanna = _build_value_view(exp_df, "strike", "vanna_exp",
-                                       "Vanna", spot, prev_vanna, compact=True)
+                                       "Vanna", spot, prev_vanna,
+                                       compact=True, open_price=open_spot)
     else:
         fig_vanna = _build_chart(exp_df, "strike", "vanna_exp",
                                   "Vanna", spot, "#a78bfa", "#fb923c",
@@ -426,13 +471,15 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#e0e0e0", "side": "left"},
                                       {"type": "net_min", "label": "Min Net Vanna",
                                        "color": "#9e9e9e", "side": "left"},
+                                      open_line,
                                   ],
                                   compact=True)
 
     # ── Zomma ────────────────────────────────────────────────────────
     if zomma_view == "values":
         fig_zomma = _build_value_view(exp_df, "strike", "zomma_exp",
-                                       "Zomma", spot, prev_zomma, compact=True)
+                                       "Zomma", spot, prev_zomma,
+                                       compact=True, open_price=open_spot)
     else:
         fig_zomma = _build_chart(exp_df, "strike", "zomma_exp",
                                   "Zomma", spot, "#66bb6a", "#ef5350",
@@ -445,12 +492,11 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#e0e0e0", "side": "left"},
                                       {"type": "net_min", "label": "Min Net Zomma",
                                        "color": "#9e9e9e", "side": "left"},
+                                      open_line,
                                   ],
                                   compact=True, show_spot=False)
 
     # ── Metrics header ─────────────────────────────────────────────
-    # Session metrics (locked at first fetch) from cache
-    session_metrics = cache.get("session_metrics", {})
     # Live metrics (recomputed every refresh)
     live_metrics = compute_live_metrics(chain, spot)
     prev_hl = cache.get("prev_day_hl", {"high": 0, "low": 0})
@@ -458,13 +504,20 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     nice_exp = f"{resolved[:4]}-{resolved[4:6]}-{resolved[6:]}"
     exp_date = dt.date(int(resolved[:4]), int(resolved[4:6]), int(resolved[6:]))
     dte = max((exp_date - dt.date.today()).days, 0)
-    mode_label = {"oi": "Open Interest", "volume": "Volume",
-                  "combined": "OI+Vol"}[mode]
+    mode_labels = {"oi": "Open Interest", "volume": "Volume",
+                   "combined": "OI+Vol", "flow": "Flow (Dealer)",
+                   "oi_flow": "OI + Flow (Live)"}
+    mode_label = mode_labels.get(mode, mode)
     ts = cache.get("timestamp", 0)
     updated = dt.datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S ET") if ts else "-"
 
     history_len = len(data_fetcher.data_manager.get_charm_history()) \
         if data_fetcher.data_manager else 0
+
+    classified = flow_stats.get("classified", 0)
+    unclassified = flow_stats.get("unclassified", 0)
+    total_flow = classified + unclassified
+    flow_pct = f"{classified / total_flow * 100:.0f}%" if total_flow > 0 else "—"
 
     status = (
         f"Ticker: {ticker}\n"
@@ -473,6 +526,7 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
         f"Mode: {mode_label}\n"
         f"Strikes: {len(exp_df)}\n"
         f"Heatmap: {history_len} snapshots\n"
+        f"Flow: {classified}/{total_flow} ({flow_pct})\n"
         f"Last fetch: {updated}"
     )
 
@@ -817,12 +871,12 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_value_view(df, x_col, y_col, title, spot, prev_values,
-                      compact=False):
+                      compact=False, open_price=0):
     """
     Heatmap-style table: each row is a strike, coloured by exposure value.
     Shows the value, change since last refresh, and change %.
     """
-    df_sorted = df.sort_values(x_col, ascending=False).copy()
+    df_sorted = df.sort_values(x_col, ascending=True).copy()
 
     strikes = df_sorted[x_col].values
     values  = df_sorted[y_col].values
@@ -927,6 +981,19 @@ def _build_value_view(df, x_col, y_col, title, spot, prev_values,
         line=dict(color="#facc15", width=3),
         fillcolor="rgba(0,0,0,0)",
     )
+
+    # ── Open price row highlight ─────────────────────────────────────
+    if open_price > 0:
+        open_dists = np.abs(strikes - open_price)
+        open_idx = int(np.argmin(open_dists))
+        fig.add_shape(
+            type="rect",
+            x0=-0.5, x1=0.5,
+            y0=open_idx - 0.5, y1=open_idx + 0.5,
+            yref="y",
+            line=dict(color="#29b6f6", width=2, dash="dash"),
+            fillcolor="rgba(0,0,0,0)",
+        )
 
     margins = dict(l=55, r=10, t=25, b=10) if compact else dict(l=60, r=15, t=30, b=15)
 

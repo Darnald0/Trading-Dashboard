@@ -1,7 +1,5 @@
 info headline numbers are wrong ?
 make close to 0 sligly brighter on charm heatmap
-add a opening price line on chart
-strike price is inverted in value mode
 previous candle on charm heatmap doesn't appear ?
 charm heatmap is wrong
-on the values charts, the change % amount only get displayed shortly before going back to 0% is it possible because the cahrt keep updating and resenting ?
+filter to mm only option position ?

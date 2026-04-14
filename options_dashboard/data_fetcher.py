@@ -259,6 +259,9 @@ class IBDataFetcher:
                 "oi":     oi,
                 "volume": _safe_float(t.volume),
                 "iv":     _safe_float(t.impliedVolatility),
+                "bid":    _safe_float(t.bid),
+                "ask":    _safe_float(t.ask),
+                "last":   _safe_float(t.last),
             }
 
         # Cancel subscriptions
@@ -275,8 +278,10 @@ class IBDataFetcher:
         seen_strikes = sorted(set(k[1] for k in data.keys()))
         rows = []
         for s in seen_strikes:
-            c_data = data.get(("C", s), {"oi": 0, "volume": 0, "iv": 0.0})
-            p_data = data.get(("P", s), {"oi": 0, "volume": 0, "iv": 0.0})
+            c_data = data.get(("C", s), {"oi": 0, "volume": 0, "iv": 0.0,
+                                          "bid": 0, "ask": 0, "last": 0})
+            p_data = data.get(("P", s), {"oi": 0, "volume": 0, "iv": 0.0,
+                                          "bid": 0, "ask": 0, "last": 0})
             rows.append({
                 "strike":      s,
                 "call_oi":     c_data["oi"],
@@ -285,6 +290,12 @@ class IBDataFetcher:
                 "put_volume":  p_data["volume"],
                 "call_iv":     c_data["iv"] if c_data["iv"] > 0 else 0.20,
                 "put_iv":      p_data["iv"] if p_data["iv"] > 0 else 0.20,
+                "call_bid":    c_data.get("bid", 0),
+                "call_ask":    c_data.get("ask", 0),
+                "call_last":   c_data.get("last", 0),
+                "put_bid":     p_data.get("bid", 0),
+                "put_ask":     p_data.get("ask", 0),
+                "put_last":    p_data.get("last", 0),
                 "dte_years":   dte_years,
             })
 
@@ -395,6 +406,18 @@ class MockDataFetcher:
         exp_date = dt.date(int(expiry[:4]), int(expiry[4:6]), int(expiry[6:]))
         dte_years = max((exp_date - dt.date.today()).days, 1) / 365.0
 
+        # Synthetic bid/ask/last for flow tracking compatibility
+        from scipy.stats import norm as _norm
+        sqrtT = np.sqrt(dte_years)
+        d1 = (np.log(spot / strikes) + (0.045 + 0.5 * call_iv**2) * dte_years) / (call_iv * sqrtT)
+        call_price = np.maximum(spot * _norm.cdf(d1) - strikes * np.exp(-0.045 * dte_years) * _norm.cdf(d1 - call_iv * sqrtT), 0.01)
+        put_price  = np.maximum(call_price - spot + strikes * np.exp(-0.045 * dte_years), 0.01)
+
+        call_mid = call_price
+        put_mid  = put_price
+        call_spread = np.clip(call_mid * 0.05, 0.05, 5.0)
+        put_spread  = np.clip(put_mid * 0.05, 0.05, 5.0)
+
         return pd.DataFrame({
             "strike":      strikes,
             "call_oi":     call_oi,
@@ -403,6 +426,12 @@ class MockDataFetcher:
             "put_volume":  put_vol,
             "call_iv":     call_iv,
             "put_iv":      put_iv,
+            "call_bid":    call_mid - call_spread / 2,
+            "call_ask":    call_mid + call_spread / 2,
+            "call_last":   call_mid + rng.uniform(-1, 1, n) * call_spread * 0.3,
+            "put_bid":     put_mid - put_spread / 2,
+            "put_ask":     put_mid + put_spread / 2,
+            "put_last":    put_mid + rng.uniform(-1, 1, n) * put_spread * 0.3,
             "dte_years":   dte_years,
         })
 
@@ -427,6 +456,10 @@ class DataManager:
         # ── Session metrics (locked on first fetch per ticker) ───────────
         self._session_metrics: dict = {}
         self._session_ticker: str = ""
+        # ── Flow tracker ─────────────────────────────────────────────────
+        from flow_tracker import FlowTracker
+        self._flow_tracker = FlowTracker()
+        self._flow_ticker: str = ""
 
     def start(self):
         self._running = True
@@ -455,6 +488,8 @@ class DataManager:
             self._charm_history.clear()
             self._session_metrics = {}
             self._session_ticker = ""
+            self._flow_tracker.reset()
+            self._flow_ticker = ""
 
     def _worker(self):
         loop = asyncio.new_event_loop()
@@ -549,6 +584,7 @@ class DataManager:
                     print(f"  Weekly EM fallback (no Friday close): ±${weekly_em:,.1f}")
 
                 self._session_metrics = {
+                    "open_spot":       spot,       # spot at first fetch
                     "prev_close_spot": pc_spot,
                     "prev_close_iv":   pc_iv,
                     "prev_close_ts":   prev_close.get("timestamp", "now"),
@@ -572,6 +608,16 @@ class DataManager:
             exp = compute_exposure(chain, spot, greek_mode=SETTINGS.greek_mode)
             for _, row in exp.iterrows():
                 charm_snapshot[row["strike"]] = row["charm_exp"]
+
+        # ── Process flow tracker ─────────────────────────────────────
+        if ticker != self._flow_ticker:
+            self._flow_tracker.reset(ticker)
+            self._flow_ticker = ticker
+        if chain is not None and not chain.empty:
+            self._flow_tracker.process(chain, spot)
+        flow_chain = self._flow_tracker.get_dealer_chain(chain)
+        oi_flow_chain = self._flow_tracker.get_oi_plus_flow_chain(chain)
+        flow_stats = self._flow_tracker.get_stats()
 
         with self._lock:
             # Reset history if ticker changed
@@ -597,6 +643,9 @@ class DataManager:
                 "chain":           chain,
                 "prev_day_hl":     prev_hl,
                 "session_metrics": dict(self._session_metrics),
+                "flow_chain":      flow_chain,
+                "oi_flow_chain":   oi_flow_chain,
+                "flow_stats":      flow_stats,
                 "error":           None,
                 "timestamp":       time.time(),
             }

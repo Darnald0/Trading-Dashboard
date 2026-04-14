@@ -1,17 +1,17 @@
 {
   "SPX": {
     "latest_date": "2026-04-08",
-    "latest_spot": 5459.53,
-    "latest_iv": 0.18700967219376363,
+    "latest_spot": 6886.24,
+    "latest_iv": 0.2,
     "prev_close_date": "2026-04-08",
-    "prev_close_spot": 6824.66,
+    "prev_close_spot": 6816.78,
     "prev_close_iv": 0.2,
     "weekly_close_date": "2026-04-08",
-    "weekly_close_spot": 5459.53,
-    "weekly_close_iv": 0.18700967219376363,
-    "latest_timestamp": "2026-04-10 01:54:54",
-    "prev_close_timestamp": "2026-04-09 22:21:55",
-    "weekly_close_timestamp": "2026-04-10 01:54:54"
+    "weekly_close_spot": 6816.78,
+    "weekly_close_iv": 0.2,
+    "latest_timestamp": "2026-04-13 22:03:19",
+    "prev_close_timestamp": "2026-04-10 22:01:47",
+    "weekly_close_timestamp": "2026-04-10 22:01:47"
   },
   "META": {
     "latest_timestamp": "2026-04-08 19:22:55",
