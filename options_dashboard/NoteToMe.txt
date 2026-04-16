@@ -3,3 +3,28 @@ make close to 0 sligly brighter on charm heatmap
 previous candle on charm heatmap doesn't appear ?
 charm heatmap is wrong
 filter to mm only option position ?
+Vanna/Charm sign convention: -call, -put dealer-short (was +call, -put) ??
+regime VS vanna/VIX ?
+
+
+to add
+Charm Decay Clock   Weighted charm pressure × hours to close
+Expected Move from straddle   Uses actual ATM straddle mid-price, not IV formula
+
+
+
+
+Regime — POSITIVE γ in green or NEGATIVE γ in red, with FADE | HIGH or TREND | LOW below
+
+How to read it for trading:
+
+POSITIVE γ + FADE + HIGH → strong mean-reversion environment. Sell premium, fade moves toward call wall/put wall, expect price to pin near max gamma.
+NEGATIVE γ + TREND + HIGH → strong trending environment. Buy breakouts, follow momentum, expect expansion away from put wall.
+Spot crossing the GEX flip line = regime change signal. Watch for it closely.
+
+Gamma sign (POSITIVE vs NEGATIVE):
+Simply the sum of all net GEX across every strike. If the total is positive, dealers are net long gamma — they have to sell when price rises and buy when price falls, which stabilizes price. If negative, dealers amplify moves.
+Bias (FADE vs TREND):
+Directly follows the gamma sign. Positive gamma = mean-reverting market = fade moves. Negative gamma = self-reinforcing market = follow the trend.
+Conviction (LOW / MEDIUM / HIGH):
+Based on the absolute magnitude of total GEX, with thresholds calibrated for SPX:

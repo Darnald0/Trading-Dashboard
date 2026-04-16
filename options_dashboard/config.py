@@ -30,7 +30,7 @@ class DashboardSettings:
     """Mutable settings that the sidebar controls change on the fly."""
     ticker: str = "SPX"
     expiry: str = "auto"
-    refresh_seconds: int = 10
+    refresh_seconds: int = 30
     greek_mode: str = "oi"               # "oi" | "volume" | "combined"
     resolved_expiry: str = ""
     spot_price: float = 0.0

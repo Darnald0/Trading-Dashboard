@@ -123,7 +123,7 @@ class FlowTracker:
                 "put_volume":  f.get("put_buy", 0) + f.get("put_sell", 0),
                 "call_iv":     float(row.get("call_iv", 0.20)),
                 "put_iv":      float(row.get("put_iv", 0.20)),
-                "dte_years":   float(row.get("dte_years", 1/365)),
+                "dte_years":   float(row.get("dte_years", 1/252)),
             })
 
         return pd.DataFrame(rows) if rows else pd.DataFrame()

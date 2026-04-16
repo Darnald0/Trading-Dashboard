@@ -18,7 +18,9 @@ from plotly.subplots import make_subplots
 
 from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
-from greek_calculator import compute_exposure, compute_live_metrics
+from greek_calculator import (compute_exposure, compute_live_metrics,
+                             classify_regime, compute_vanna_vix_signal,
+                             compute_charm_clock)
 
 app = dash.Dash(
     __name__,
@@ -167,16 +169,20 @@ charts_panel = html.Div(
                     dcc.Graph(id="chart-charm", style={"height": "100%"}),
                     style={"flex": 7, "minHeight": 0},
                 ),
-                # Bottom row: Vanna + Zomma side by side
+                # Bottom row: Vanna + DEX + Zomma side by side
                 html.Div(
                     [
                         html.Div(
                             dcc.Graph(id="chart-vanna", style={"height": "100%"}),
-                            style={"flex": 1, "minWidth": 0, "overflowY": "auto"},
+                            style={"flex": 1, "minWidth": 0},
+                        ),
+                        html.Div(
+                            dcc.Graph(id="chart-dex", style={"height": "100%"}),
+                            style={"flex": 1, "minWidth": 0},
                         ),
                         html.Div(
                             dcc.Graph(id="chart-zomma", style={"height": "100%"}),
-                            style={"flex": 1, "minWidth": 0, "overflowY": "auto"},
+                            style={"flex": 1, "minWidth": 0},
                         ),
                     ],
                     style={
@@ -308,6 +314,7 @@ def on_mode_change(mode):
     Output("chart-gamma", "figure"),
     Output("chart-charm", "figure"),
     Output("chart-vanna", "figure"),
+    Output("chart-dex", "figure"),
     Output("chart-zomma", "figure"),
     Output("metrics-header", "children"),
     Output("status-text", "children"),
@@ -324,19 +331,19 @@ def on_mode_change(mode):
 def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, e, "Loading...", "Initialising...", dash.no_update, dash.no_update
+        return e, e, e, e, e, "Loading...", "Initialising...", dash.no_update, dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, e, "Error", f"X  {error}", dash.no_update, dash.no_update
+        return e, e, e, e, e, "Error", f"X  {error}", dash.no_update, dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, e, "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
+        return e, e, e, e, e, "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -381,19 +388,69 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     prev_gamma = prev_data.get("gamma", {})
     prev_charm = prev_data.get("charm", {})
     prev_vanna = prev_data.get("vanna", {})
+    prev_dex   = prev_data.get("dex", {})
     prev_zomma = prev_data.get("zomma", {})
 
-    # Save current values for next cycle
-    new_prev = {
-        "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
-        "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
-        "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
-        "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
-    }
+    # Only update the store when the underlying data actually changed
+    # (new fetch from IB), not on every 2s poll cycle
+    cache_ts = cache.get("timestamp", 0)
+    prev_ts  = prev_data.get("_ts", 0)
+
+    if cache_ts != prev_ts:
+        # New data arrived — save current as "previous" for next change
+        new_prev = {
+            "_ts":   cache_ts,
+            "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
+            "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
+            "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
+            "dex":   {str(r["strike"]): r["dex_exp"]   for _, r in exp_df.iterrows()},
+            "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
+        }
+    else:
+        # Same data — don't overwrite prev, keep showing the delta
+        new_prev = dash.no_update
 
     # Common open price line for bar charts
     open_line = {"type": "price", "value": open_spot,
                  "label": "Open", "color": "#29b6f6", "side": "right"}
+
+    # ── Gamma regime & key levels ────────────────────────────────────
+    regime = classify_regime(exp_df, spot) if not exp_df.empty else {}
+    gex_flip = regime.get("gex_flip")
+    call_wall = regime.get("call_wall")
+    put_wall = regime.get("put_wall")
+
+    # Build gamma-specific indicator lines
+    gamma_lines = [
+        {"type": "exposure_max", "label": "Max Pos GEX",
+         "color": "#00ffcc", "side": "left"},
+        {"type": "exposure_min", "label": "Max Neg GEX",
+         "color": "#ff6b6b", "side": "left"},
+        {"type": "net_max", "label": "Max Net GEX",
+         "color": "#e0e0e0", "side": "left"},
+        {"type": "net_min", "label": "Min Net GEX",
+         "color": "#9e9e9e", "side": "left"},
+        {"type": "price", "value": prev_hl["high"],
+         "label": "Prev High", "color": "#80cbc4", "side": "right"},
+        {"type": "price", "value": prev_hl["low"],
+         "label": "Prev Low", "color": "#ef9a9a", "side": "right"},
+        open_line,
+    ]
+    # GEX flip line
+    if gex_flip is not None:
+        gamma_lines.append(
+            {"type": "price", "value": gex_flip,
+             "label": "GEX Flip", "color": "#ff9800", "side": "left"})
+    # Call wall
+    if call_wall is not None:
+        gamma_lines.append(
+            {"type": "price", "value": call_wall,
+             "label": "Call Wall", "color": "#4caf50", "side": "right"})
+    # Put wall
+    if put_wall is not None:
+        gamma_lines.append(
+            {"type": "price", "value": put_wall,
+             "label": "Put Wall", "color": "#f44336", "side": "right"})
 
     # ── Gamma ────────────────────────────────────────────────────────
     if gamma_view == "values":
@@ -403,23 +460,7 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     else:
         fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
                                   "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
-                                  lines=[
-                                      {"type": "exposure_max", "label": "Max Pos GEX",
-                                       "color": "#00ffcc", "side": "left"},
-                                      {"type": "exposure_min", "label": "Max Neg GEX",
-                                       "color": "#ff6b6b", "side": "left"},
-                                      {"type": "net_max", "label": "Max Net GEX",
-                                       "color": "#e0e0e0", "side": "left"},
-                                      {"type": "net_min", "label": "Min Net GEX",
-                                       "color": "#9e9e9e", "side": "left"},
-                                      {"type": "price", "value": prev_hl["high"],
-                                       "label": "Prev High",
-                                       "color": "#80cbc4", "side": "right"},
-                                      {"type": "price", "value": prev_hl["low"],
-                                       "label": "Prev Low",
-                                       "color": "#ef9a9a", "side": "right"},
-                                      open_line,
-                                  ])
+                                  lines=gamma_lines)
 
     # ── Charm ────────────────────────────────────────────────────────
     if charm_view == "values":
@@ -474,6 +515,20 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                       open_line,
                                   ],
                                   compact=True)
+
+    # ── DEX (Delta Exposure) ─────────────────────────────────────────
+    fig_dex = _build_chart(exp_df, "strike", "dex_exp",
+                            "DEX (Delta)", spot, "#26c6da", "#ff7043",
+                            lines=[
+                                {"type": "exposure_max", "label": "Max Pos DEX",
+                                 "color": "#26c6da", "side": "left"},
+                                {"type": "exposure_min", "label": "Max Neg DEX",
+                                 "color": "#ff7043", "side": "left"},
+                                {"type": "net_max", "label": "Max Net DEX",
+                                 "color": "#e0e0e0", "side": "left"},
+                                open_line,
+                            ],
+                            compact=True)
 
     # ── Zomma ────────────────────────────────────────────────────────
     if zomma_view == "values":
@@ -534,10 +589,19 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     for e in expiries:
         opts.append({"label": f"{e[:4]}-{e[4:6]}-{e[6:]}", "value": e})
 
-    header = _build_metrics_header(ticker, spot, session_metrics,
-                                    live_metrics, prev_hl, dte, updated)
+    # ── Vanna / VIX signal ──────────────────────────────────────────
+    vix_data = cache.get("vix", {"current": 0, "prev_close": 0})
+    vanna_vix = compute_vanna_vix_signal(
+        exp_df, vix_data.get("current", 0), vix_data.get("prev_close", 0))
 
-    return fig_gamma, fig_charm, fig_vanna, fig_zomma, header, status, opts, new_prev
+    # ── Charm Decay Clock ────────────────────────────────────────────
+    charm_clock = compute_charm_clock(exp_df, spot)
+
+    header = _build_metrics_header(ticker, spot, session_metrics,
+                                    live_metrics, prev_hl, dte, updated,
+                                    regime, vanna_vix, charm_clock)
+
+    return fig_gamma, fig_charm, fig_vanna, fig_dex, fig_zomma, header, status, opts, new_prev
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -631,11 +695,66 @@ def _em_progress(label, spot, low, high, color_lo, color_hi):
     })
 
 
-def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated):
+def _vanna_vix_cell(vanna_vix):
+    """Build the Vanna/VIX signal cell for the header."""
+    if not vanna_vix or vanna_vix.get("signal") == "N/A":
+        return _metric_cell("Vanna/VIX", "N/A", color="#555",
+                            sub="No VIX data")
+
+    signal = vanna_vix["signal"]
+    vix_cur = vanna_vix.get("vix_current", 0)
+    vix_chg = vanna_vix.get("vix_change", 0)
+    vix_pct = vanna_vix.get("vix_pct", 0)
+
+    if signal == "BULLISH":
+        color = "#66bb6a"
+    elif signal == "BEARISH":
+        color = "#ef5350"
+    else:
+        color = "#888"
+
+    sub = f"VIX {vix_cur:.1f} ({vix_chg:+.1f} / {vix_pct:+.1f}%)"
+    return _metric_cell("Vanna/VIX", signal, color=color, sub=sub)
+
+
+def _charm_clock_cell(charm_clock):
+    """Build the Charm Decay Clock cell for the header."""
+    if not charm_clock or charm_clock.get("direction") == "N/A":
+        return _metric_cell("Charm Clock", "N/A", color="#555", sub="No data")
+
+    direction = charm_clock["direction"]
+    hours = charm_clock.get("hours_to_close", 0)
+    pressure = charm_clock.get("charm_pressure", 0)
+
+    if direction == "SUPPORTIVE":
+        color = "#66bb6a"
+    elif direction == "PRESSURING":
+        color = "#ef5350"
+    else:
+        color = "#888"
+
+    # Format pressure with K/M suffix
+    ap = abs(pressure)
+    if ap >= 1e6:
+        p_str = f"{pressure/1e6:+,.1f}M"
+    elif ap >= 1e3:
+        p_str = f"{pressure/1e3:+,.0f}K"
+    else:
+        p_str = f"{pressure:+,.0f}"
+
+    sub = f"{hours:.1f}h left | {p_str}"
+    return _metric_cell("Charm Clock", direction, color=color, sub=sub)
+
+
+def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
+                          regime=None, vanna_vix=None, charm_clock=None):
     """
     Build the header bar cells.
-    session: locked from prev close file (EM, ranges)
-    live:    updated every refresh (IV, straddle, P/C)
+    session:     locked from prev close file (EM, ranges)
+    live:        updated every refresh (IV, straddle, P/C, straddle EM)
+    regime:      gamma regime classification
+    vanna_vix:   vanna/VIX alignment signal
+    charm_clock: charm decay clock
     """
     if not session and not live:
         return "No metrics"
@@ -672,22 +791,68 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated):
     daily_src = f"@ {pc_ts}" if pc_ts else "fallback"
     weekly_src = f"@ {wc_ts}" if wc_ts else "fallback"
 
+    # Regime
+    regime = regime or {}
+    gamma_sign = regime.get("gamma", "—")
+    bias = regime.get("bias", "—")
+    conviction = regime.get("conviction", "—")
+    gex_flip = regime.get("gex_flip")
+    above_flip = regime.get("above_flip")
+    total_gex = regime.get("total_gex", 0)
+
+    # Regime color
+    if gamma_sign == "POSITIVE":
+        regime_color = "#66bb6a"  # green
+    elif gamma_sign == "NEGATIVE":
+        regime_color = "#ef5350"  # red
+    else:
+        regime_color = "#888"
+
+    # Flip position text
+    if above_flip is True:
+        flip_pos = "Above flip (+ territory)"
+    elif above_flip is False:
+        flip_pos = "Below flip (− territory)"
+    else:
+        flip_pos = "No flip detected"
+
     cells = [
         # Ticker + spot
         _metric_cell(ticker, f"${spot:,.2f}", color="#facc15",
                       sub=f"Prev close ${pc_spot:,.1f}"),
+
+        # Gamma Regime
+        _metric_cell("Regime", f"{gamma_sign} γ",
+                      color=regime_color,
+                      sub=f"{bias} | {conviction}"),
+
+        # GEX Flip
+        _metric_cell("GEX Flip",
+                      f"${gex_flip:,.0f}" if gex_flip else "—",
+                      color="#ff9800",
+                      sub=flip_pos),
+
+        # Vanna / VIX Signal
+        _vanna_vix_cell(vanna_vix),
 
         # Live ATM IV + change from prev close
         _metric_cell("ATM IV (live)", f"{live_iv * 100:.1f}%",
                       color="#4dabf7",
                       sub=f"Prev {pc_iv * 100:.1f}%  {iv_chg}"),
 
-        # Straddle price
-        _metric_cell("ATM Straddle", f"${straddle:,.2f}",
+        # ATM Straddle — the market's priced-in expected move
+        _metric_cell("ATM Straddle", f"±${straddle:,.2f}",
                       color="#ffd54f",
                       sub=f"{straddle / spot * 100:.2f}% of spot" if spot > 0 else ""),
 
-        # Daily EM (from prev close)
+        # Straddle EM range (live — based on current ATM straddle mid)
+        _em_progress("Straddle EM",
+                     spot,
+                     live.get("straddle_em_low", spot),
+                     live.get("straddle_em_high", spot),
+                     "#ffd54f", "#ffd54f"),
+
+        # Daily EM (from prev close IV — locked for the day)
         _metric_cell("Daily EM (1σ)", f"±${daily_em:,.1f}",
                       color="#a78bfa",
                       sub=f"{daily_em / pc_spot * 100:.2f}%  {daily_src}" if pc_spot > 0 else ""),

@@ -15,7 +15,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
-from config import IB_HOST, IB_PORT, IB_CLIENT_ID, SETTINGS, INDEX_TICKERS, ET
+from config import IB_HOST, IB_PORT, IB_CLIENT_ID, SETTINGS, INDEX_TICKERS, ET, RISK_FREE_RATE
 
 USE_MOCK = False
 
@@ -106,6 +106,26 @@ class IBDataFetcher:
         except Exception as exc:
             print(f"  Warning: could not fetch prev day H/L: {exc}")
         return {"high": 0.0, "low": 0.0}
+
+    def get_vix(self) -> dict:
+        """Return current VIX and previous close."""
+        from ib_insync import Index
+        contract = Index("VIX", "CBOE")
+        try:
+            self.ib.qualifyContracts(contract)
+            self.ib.reqMarketDataType(4)
+            md = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2)
+            current = _safe_float(md.last)
+            if current == 0:
+                current = _safe_float(md.close)
+            prev_close = _safe_float(md.close)
+            self.ib.cancelMktData(contract)
+            print(f"  VIX: {current:.2f}  (prev close: {prev_close:.2f})")
+            return {"current": current, "prev_close": prev_close}
+        except Exception as exc:
+            print(f"  Warning: could not fetch VIX: {exc}")
+            return {"current": 0, "prev_close": 0}
 
     # ── chain definitions ────────────────────────────────────────────────
 
@@ -271,25 +291,61 @@ class IBDataFetcher:
             except Exception:
                 pass
 
-        # Build DataFrame
-        exp_date = dt.date(int(expiry[:4]), int(expiry[4:6]), int(expiry[6:]))
-        dte_years = max((exp_date - dt.date.today()).days, 1) / 365.0
+        # Build DataFrame with business-day DTE and solved IV
+        from greek_calculator import (compute_time_to_expiry, quality_mid,
+                                       implied_vol_newton)
+
+        dte_years = compute_time_to_expiry(expiry)
 
         seen_strikes = sorted(set(k[1] for k in data.keys()))
         rows = []
+        solved_ivs = []   # for computing reference IV for failed solves
+
         for s in seen_strikes:
             c_data = data.get(("C", s), {"oi": 0, "volume": 0, "iv": 0.0,
                                           "bid": 0, "ask": 0, "last": 0})
             p_data = data.get(("P", s), {"oi": 0, "volume": 0, "iv": 0.0,
                                           "bid": 0, "ask": 0, "last": 0})
+
+            # ── Liquidity filter + IV solve from bid/ask mid ─────────
+            # Call IV: try Newton-Raphson from mid, filter illiquid
+            c_mid = quality_mid(c_data.get("bid", 0), c_data.get("ask", 0))
+            call_iv_solved = None
+            if c_mid > 0 and dte_years > 1e-6:
+                call_iv_solved = implied_vol_newton(
+                    spot, s, dte_years, RISK_FREE_RATE, c_mid, "C")
+
+            if call_iv_solved is not None:
+                call_iv = call_iv_solved
+                solved_ivs.append(call_iv)
+            elif c_data["iv"] > 0:
+                call_iv = c_data["iv"]  # fallback to IB model IV
+            else:
+                call_iv = 0.0  # will be filled with ref IV later
+
+            # Put IV: same process
+            p_mid = quality_mid(p_data.get("bid", 0), p_data.get("ask", 0))
+            put_iv_solved = None
+            if p_mid > 0 and dte_years > 1e-6:
+                put_iv_solved = implied_vol_newton(
+                    spot, s, dte_years, RISK_FREE_RATE, p_mid, "P")
+
+            if put_iv_solved is not None:
+                put_iv = put_iv_solved
+                solved_ivs.append(put_iv)
+            elif p_data["iv"] > 0:
+                put_iv = p_data["iv"]
+            else:
+                put_iv = 0.0
+
             rows.append({
                 "strike":      s,
                 "call_oi":     c_data["oi"],
                 "put_oi":      p_data["oi"],
                 "call_volume": c_data["volume"],
                 "put_volume":  p_data["volume"],
-                "call_iv":     c_data["iv"] if c_data["iv"] > 0 else 0.20,
-                "put_iv":      p_data["iv"] if p_data["iv"] > 0 else 0.20,
+                "call_iv":     call_iv,
+                "put_iv":      put_iv,
                 "call_bid":    c_data.get("bid", 0),
                 "call_ask":    c_data.get("ask", 0),
                 "call_last":   c_data.get("last", 0),
@@ -298,6 +354,28 @@ class IBDataFetcher:
                 "put_last":    p_data.get("last", 0),
                 "dte_years":   dte_years,
             })
+
+        # Fill missing IVs with reference IV (average of solved IVs)
+        if solved_ivs:
+            ref_iv = sum(solved_ivs) / len(solved_ivs)
+            for row in rows:
+                if row["call_iv"] <= 0:
+                    row["call_iv"] = ref_iv
+                if row["put_iv"] <= 0:
+                    row["put_iv"] = ref_iv
+        else:
+            # No IV solved at all — use 0.20 default
+            for row in rows:
+                if row["call_iv"] <= 0:
+                    row["call_iv"] = 0.20
+                if row["put_iv"] <= 0:
+                    row["put_iv"] = 0.20
+
+        n_solved = len(solved_ivs)
+        n_total = len(rows) * 2
+        if n_solved > 0:
+            print(f"  IV: {n_solved}/{n_total} solved from bid/ask mid  "
+                  f"(ref IV = {sum(solved_ivs)/len(solved_ivs)*100:.1f}%)")
 
         return pd.DataFrame(rows)
 
@@ -332,6 +410,9 @@ class MockDataFetcher:
     def get_prev_day_hl(self, ticker: str) -> dict:
         base = self._base_prices.get(ticker.upper(), 100.0)
         return {"high": base * 1.008, "low": base * 0.992}
+
+    def get_vix(self) -> dict:
+        return {"current": 18.5, "prev_close": 19.2}
 
     def get_expiries(self, ticker: str) -> list[str]:
         today = dt.date.today()
@@ -404,7 +485,9 @@ class MockDataFetcher:
         put_iv  = np.clip(base_iv + 0.015, 0.05, 1.5)   # put skew
 
         exp_date = dt.date(int(expiry[:4]), int(expiry[4:6]), int(expiry[6:]))
-        dte_years = max((exp_date - dt.date.today()).days, 1) / 365.0
+        # Use business-day DTE for consistency with live data
+        from greek_calculator import compute_time_to_expiry
+        dte_years = compute_time_to_expiry(expiry)
 
         # Synthetic bid/ask/last for flow tracking compatibility
         from scipy.stats import norm as _norm
@@ -526,6 +609,11 @@ class DataManager:
             prev_hl = fetcher.get_prev_day_hl(ticker)
             print(f"  Prev day: H={prev_hl['high']:.2f}  L={prev_hl['low']:.2f}")
 
+        # Fetch VIX (current + prev close)
+        vix_data = self._cache.get("vix", {"current": 0, "prev_close": 0})
+        if ticker != cached_ticker or vix_data["current"] == 0:
+            vix_data = fetcher.get_vix()
+
         # ── Lock session metrics on FIRST fetch per ticker ───────────
         # Uses previous close IV from file for daily EM,
         # and last Friday close IV for weekly EM.
@@ -642,6 +730,7 @@ class DataManager:
                 "expiries":        expiries,
                 "chain":           chain,
                 "prev_day_hl":     prev_hl,
+                "vix":             vix_data,
                 "session_metrics": dict(self._session_metrics),
                 "flow_chain":      flow_chain,
                 "oi_flow_chain":   oi_flow_chain,
