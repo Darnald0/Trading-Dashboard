@@ -30,10 +30,104 @@ app = dash.Dash(
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LAYOUT
+#  WIDGET NAVIGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-sidebar = html.Div(
+NAV_WIDTH_OPEN = 180
+NAV_WIDTH_CLOSED = 44
+
+# Widget definitions: id -> (label, icon)
+WIDGETS = {
+    "greeks": ("Greeks Visualizer", "\U0001F4CA"),
+}
+
+def _build_nav_buttons(active_id="greeks"):
+    """Build the list of widget buttons for the nav sidebar."""
+    buttons = []
+    for wid, (label, icon) in WIDGETS.items():
+        is_active = wid == active_id
+        buttons.append(
+            html.Div(
+                html.Button(
+                    [
+                        html.Span(icon, style={"fontSize": "1.1rem", "minWidth": "20px"}),
+                        html.Span(label, className="nav-label",
+                                  style={"marginLeft": "10px", "fontSize": "0.80rem",
+                                         "whiteSpace": "nowrap", "overflow": "hidden"}),
+                    ],
+                    id={"type": "nav-btn", "index": wid},
+                    n_clicks=0,
+                    style={
+                        "width": "100%",
+                        "display": "flex",
+                        "alignItems": "center",
+                        "padding": "10px 12px",
+                        "border": "none",
+                        "borderRadius": "6px",
+                        "cursor": "pointer",
+                        "textAlign": "left",
+                        "color": "#fff" if is_active else "#aaa",
+                        "backgroundColor": "rgba(255,255,255,0.08)" if is_active else "transparent",
+                        "fontWeight": "600" if is_active else "400",
+                        "transition": "all 0.15s",
+                    },
+                ),
+                style={"marginBottom": "4px"},
+            )
+        )
+    return buttons
+
+
+nav_sidebar = html.Div(
+    id="nav-sidebar",
+    children=[
+        # Toggle button
+        html.Button(
+            "\u2630",
+            id="nav-toggle",
+            n_clicks=0,
+            style={
+                "width": "100%",
+                "padding": "10px",
+                "border": "none",
+                "borderBottom": "1px solid rgba(255,255,255,0.08)",
+                "backgroundColor": "transparent",
+                "color": "#aaa",
+                "fontSize": "1.2rem",
+                "cursor": "pointer",
+                "textAlign": "center",
+                "marginBottom": "8px",
+            },
+        ),
+        # Widget buttons
+        html.Div(
+            id="nav-buttons",
+            children=_build_nav_buttons("greeks"),
+            style={"padding": "0 6px"},
+        ),
+    ],
+    style={
+        "width": f"{NAV_WIDTH_OPEN}px",
+        "minWidth": f"{NAV_WIDTH_OPEN}px",
+        "height": "100vh",
+        "overflowY": "auto",
+        "overflowX": "hidden",
+        "borderRight": "1px solid rgba(255,255,255,0.10)",
+        "backgroundColor": "rgba(0,0,0,0.4)",
+        "transition": "width 0.2s, min-width 0.2s",
+        "flexShrink": 0,
+    },
+)
+
+# Store for nav state
+nav_store = dcc.Store(id="store-nav", data={"open": True, "active": "greeks"})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GREEKS VISUALIZER WIDGET
+# ══════════════════════════════════════════════════════════════════════════════
+
+settings_sidebar = html.Div(
     [
         html.H5("Settings", className="mb-3",
                  style={"letterSpacing": "0.05em"}),
@@ -90,7 +184,7 @@ sidebar = html.Div(
 
         html.Hr(),
 
-        # ── Per-chart view modes ─────────────────────────────────────
+        # -- Per-chart view modes --
         dbc.Label("Gamma View", className="fw-bold",
                   style={"fontSize": "0.80rem"}),
         dbc.RadioItems(
@@ -140,7 +234,7 @@ sidebar = html.Div(
         html.Div(id="status-text", className="text-muted",
                  style={"fontSize": "0.75rem", "whiteSpace": "pre-line"}),
 
-        # Hidden store for previous exposure values (for computing deltas)
+        # Hidden store for previous exposure values
         dcc.Store(id="store-prev-exposure", data={}),
     ],
     style={
@@ -153,8 +247,8 @@ sidebar = html.Div(
     },
 )
 
-# Layout:  Sidebar | Gamma       | Charm (70%)
-#                                | Vanna | Zomma (30%)
+# Layout:  Settings | Gamma       | Charm (70%)
+#                                 | Vanna | DEX | Zomma (30%)
 charts_panel = html.Div(
     [
         # Left column: Gamma (full height)
@@ -162,7 +256,7 @@ charts_panel = html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
             style={"flex": 0.7, "minWidth": 0},
         ),
-        # Right column: Charm on top, Vanna+Zomma on bottom
+        # Right column: Charm on top, Vanna+DEX+Zomma on bottom
         html.Div(
             [
                 html.Div(
@@ -207,7 +301,7 @@ charts_panel = html.Div(
     },
 )
 
-# ── Metrics header bar (populated by callback) ──────────────────────────────
+# -- Metrics header bar (populated by callback) --
 
 metrics_header = html.Div(
     id="metrics-header",
@@ -226,13 +320,12 @@ metrics_header = html.Div(
     },
 )
 
-poll_timer = dcc.Interval(id="interval-poll", interval=2_000, n_intervals=0)
+# -- Greeks Visualizer widget (complete) --
 
-# Main layout: Sidebar | (Header + Charts)
-app.layout = html.Div(
-    [
-        poll_timer,
-        sidebar,
+greeks_widget = html.Div(
+    id="widget-greeks",
+    children=[
+        settings_sidebar,
         html.Div(
             [metrics_header, charts_panel],
             style={
@@ -244,6 +337,30 @@ app.layout = html.Div(
             },
         ),
     ],
+    style={"display": "flex", "flex": 1, "height": "100vh", "overflow": "hidden"},
+)
+
+# -- Widget content area (shows the active widget) --
+
+widget_content = html.Div(
+    id="widget-content",
+    children=[greeks_widget],
+    style={"flex": 1, "display": "flex", "overflow": "hidden"},
+)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN APP LAYOUT
+# ══════════════════════════════════════════════════════════════════════════════
+
+poll_timer = dcc.Interval(id="interval-poll", interval=2_000, n_intervals=0)
+
+app.layout = html.Div(
+    [
+        poll_timer,
+        nav_store,
+        nav_sidebar,
+        widget_content,
+    ],
     style={"display": "flex", "height": "100vh", "overflow": "hidden"},
 )
 
@@ -251,6 +368,50 @@ app.layout = html.Div(
 # ══════════════════════════════════════════════════════════════════════════════
 #  CALLBACKS
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── Nav toggle (collapse / expand) ──────────────────────────────────────────
+
+@app.callback(
+    Output("nav-sidebar", "style"),
+    Output("store-nav", "data"),
+    Input("nav-toggle", "n_clicks"),
+    State("store-nav", "data"),
+    prevent_initial_call=True,
+)
+def toggle_nav(n, nav_data):
+    is_open = nav_data.get("open", True)
+    new_open = not is_open
+
+    if new_open:
+        style = {
+            "width": f"{NAV_WIDTH_OPEN}px",
+            "minWidth": f"{NAV_WIDTH_OPEN}px",
+            "height": "100vh",
+            "overflowY": "auto",
+            "overflowX": "hidden",
+            "borderRight": "1px solid rgba(255,255,255,0.10)",
+            "backgroundColor": "rgba(0,0,0,0.4)",
+            "transition": "width 0.2s, min-width 0.2s",
+            "flexShrink": 0,
+        }
+    else:
+        style = {
+            "width": f"{NAV_WIDTH_CLOSED}px",
+            "minWidth": f"{NAV_WIDTH_CLOSED}px",
+            "height": "100vh",
+            "overflowY": "auto",
+            "overflowX": "hidden",
+            "borderRight": "1px solid rgba(255,255,255,0.10)",
+            "backgroundColor": "rgba(0,0,0,0.4)",
+            "transition": "width 0.2s, min-width 0.2s",
+            "flexShrink": 0,
+        }
+
+    nav_data["open"] = new_open
+    return style, nav_data
+
+
+# ── Existing callbacks ──────────────────────────────────────────────────────
 
 @app.callback(
     Output("dropdown-expiry", "options"),
@@ -383,36 +544,76 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     open_spot = session_metrics.get("open_spot", 0)
 
     # Previous exposure for computing deltas (from dcc.Store)
+    # Store structure:
+    #   "_ts"          = timestamp of latest fetch
+    #   "display_prev" = baseline for value-view deltas (frozen between fetches)
+    #   "current"      = values from latest fetch
+    #   "history"      = list of up to 3 past snapshots [oldest, ..., newest]
+    #                    used for dot indicators on bar charts
     if prev_data is None:
         prev_data = {}
-    prev_gamma = prev_data.get("gamma", {})
-    prev_charm = prev_data.get("charm", {})
-    prev_vanna = prev_data.get("vanna", {})
-    prev_dex   = prev_data.get("dex", {})
-    prev_zomma = prev_data.get("zomma", {})
 
-    # Only update the store when the underlying data actually changed
-    # (new fetch from IB), not on every 2s poll cycle
     cache_ts = cache.get("timestamp", 0)
     prev_ts  = prev_data.get("_ts", 0)
+    prev_mode = prev_data.get("_mode", "")
 
-    if cache_ts != prev_ts:
-        # New data arrived — save current as "previous" for next change
+    # If mode changed, reset all history (dots would be from wrong mode)
+    mode_changed = (mode != prev_mode and prev_mode != "")
+
+    # Build current snapshot
+    cur_snap = {
+        "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
+        "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
+        "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
+        "dex":   {str(r["strike"]): r["dex_exp"]   for _, r in exp_df.iterrows()},
+        "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
+    }
+
+    if mode_changed:
+        # Mode switched — start fresh
         new_prev = {
-            "_ts":   cache_ts,
-            "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
-            "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
-            "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
-            "dex":   {str(r["strike"]): r["dex_exp"]   for _, r in exp_df.iterrows()},
-            "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
+            "_ts":          cache_ts,
+            "_mode":        mode,
+            "display_prev": {},
+            "current":      cur_snap,
+            "history":      [],
+        }
+        dp = {}
+    elif cache_ts != prev_ts:
+        # New fetch — rotate history
+        dp = prev_data.get("current", {})
+        old_history = prev_data.get("history", [])
+        if dp:
+            new_history = (old_history + [dp])[-3:]
+        else:
+            new_history = old_history[-3:]
+        new_prev = {
+            "_ts":          cache_ts,
+            "_mode":        mode,
+            "display_prev": dp,
+            "current":      cur_snap,
+            "history":      new_history,
         }
     else:
-        # Same data — don't overwrite prev, keep showing the delta
+        dp = prev_data.get("display_prev", {})
         new_prev = dash.no_update
+
+    prev_gamma = dp.get("gamma", {})
+    prev_charm = dp.get("charm", {})
+    prev_vanna = dp.get("vanna", {})
+    prev_dex   = dp.get("dex", {})
+    prev_zomma = dp.get("zomma", {})
+
+    # History for bar chart dots (list of up to 3 past snapshots)
+    history = prev_data.get("history", [])
 
     # Common open price line for bar charts
     open_line = {"type": "price", "value": open_spot,
                  "label": "Open", "color": "#29b6f6", "side": "right"}
+
+    # Extract history dots per greek (list of dicts for each past snapshot)
+    def _hist(greek_key):
+        return [snap.get(greek_key, {}) for snap in history]
 
     # ── Gamma regime & key levels ────────────────────────────────────
     regime = classify_regime(exp_df, spot) if not exp_df.empty else {}
@@ -460,7 +661,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     else:
         fig_gamma = _build_chart(exp_df, "strike", "gamma_exp",
                                   "Gamma (GEX)", spot, "#00d4aa", "#ff4d6a",
-                                  lines=gamma_lines)
+                                  lines=gamma_lines,
+                                  history_dots=_hist("gamma"))
 
     # ── Charm ────────────────────────────────────────────────────────
     if charm_view == "values":
@@ -493,7 +695,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#9e9e9e", "side": "left"},
                                       open_line,
                                   ],
-                                  show_spot=False)
+                                  show_spot=False,
+                                  history_dots=_hist("charm"))
 
     # ── Vanna ────────────────────────────────────────────────────────
     if vanna_view == "values":
@@ -514,7 +717,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#9e9e9e", "side": "left"},
                                       open_line,
                                   ],
-                                  compact=True)
+                                  compact=True,
+                                  history_dots=_hist("vanna"))
 
     # ── DEX (Delta Exposure) ─────────────────────────────────────────
     fig_dex = _build_chart(exp_df, "strike", "dex_exp",
@@ -528,7 +732,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                  "color": "#e0e0e0", "side": "left"},
                                 open_line,
                             ],
-                            compact=True)
+                            compact=True,
+                            history_dots=_hist("dex"))
 
     # ── Zomma ────────────────────────────────────────────────────────
     if zomma_view == "values":
@@ -549,7 +754,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#9e9e9e", "side": "left"},
                                       open_line,
                                   ],
-                                  compact=True, show_spot=False)
+                                  compact=True, show_spot=False,
+                                  history_dots=_hist("zomma"))
 
     # ── Metrics header ─────────────────────────────────────────────
     # Live metrics (recomputed every refresh)
@@ -895,10 +1101,14 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
-                 lines=None, compact=False, show_spot=True):
+                 lines=None, compact=False, show_spot=True,
+                 history_dots=None):
     """Horizontal bar chart: Y=strike, X=exposure.
     compact=True uses tighter margins and larger dtick for small panels.
     show_spot=False hides the spot price line.
+
+    history_dots: list of dicts [{strike_str: value, ...}, ...] from oldest→newest
+        Up to 3 past snapshots shown as dots with fading opacity.
 
     lines: list of dicts, each with:
         "value":  Y-axis value (strike or price)
@@ -923,6 +1133,37 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
         opacity=0.85,
         name=title,
     ))
+
+    # ── History dots (past snapshot values as fading circles) ─────────
+    if history_dots:
+        strikes = df_sorted[x_col].values
+        # Opacity: oldest=0.2, newest=0.5
+        n_hist = len(history_dots)
+        for i, snap in enumerate(history_dots):
+            if not snap:
+                continue
+            opacity = 0.2 + 0.15 * i  # 0.20, 0.35, 0.50
+            dot_x = []
+            dot_y = []
+            for s in strikes:
+                val = snap.get(str(int(s)), snap.get(str(float(s))))
+                if val is not None:
+                    dot_x.append(val)
+                    dot_y.append(s)
+
+            if dot_x:
+                fig.add_trace(go.Scatter(
+                    x=dot_x, y=dot_y,
+                    mode="markers",
+                    marker=dict(
+                        color="white",
+                        size=5 if compact else 6,
+                        opacity=opacity,
+                        line=dict(width=0),
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
 
     # Spot line
     if show_spot:
