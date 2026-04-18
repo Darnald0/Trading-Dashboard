@@ -49,14 +49,15 @@ def _safe_float(val, default=0.0):
 
 class IBDataFetcher:
 
-    def __init__(self):
+    def __init__(self, client_id=None):
         from ib_insync import IB
         self.ib = IB()
         self._connected = False
+        self._client_id = client_id or IB_CLIENT_ID
 
     def connect(self):
         if not self._connected:
-            self.ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+            self.ib.connect(IB_HOST, IB_PORT, clientId=self._client_id)
             self._connected = True
 
     def disconnect(self):

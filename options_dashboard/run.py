@@ -16,6 +16,7 @@ import argparse
 asyncio.set_event_loop(asyncio.new_event_loop())
 
 import data_fetcher
+import matrix_data
 from dashboard import app
 
 
@@ -35,9 +36,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # Start the background data-fetching thread BEFORE Dash begins serving
+    # Start the background data-fetching threads BEFORE Dash begins serving
     use_mock = args.mock or data_fetcher.USE_MOCK
     data_fetcher.init_data_manager(use_mock=use_mock)
+    matrix_data.init_matrix_manager(use_mock=use_mock)
 
     print(f"\n  Dashboard starting at  http://localhost:{args.port}\n")
     app.run(debug=args.debug, host="0.0.0.0", port=args.port)

@@ -11,13 +11,14 @@ import datetime as dt
 import numpy as np
 
 import dash
-from dash import dcc, html, Input, Output, State
+from dash import dcc, html, Input, Output, State, ALL, ctx
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
+import matrix_data
 from greek_calculator import (compute_exposure, compute_live_metrics,
                              classify_regime, compute_vanna_vix_signal,
                              compute_charm_clock)
@@ -39,6 +40,7 @@ NAV_WIDTH_CLOSED = 44
 # Widget definitions: id -> (label, icon)
 WIDGETS = {
     "greeks": ("Greeks Visualizer", "\U0001F4CA"),
+    "matrix": ("Market Matrix", "\U0001F5FA"),
 }
 
 def _build_nav_buttons(active_id="greeks"):
@@ -50,9 +52,16 @@ def _build_nav_buttons(active_id="greeks"):
             html.Div(
                 html.Button(
                     [
-                        html.Span(icon, style={"fontSize": "1.1rem", "minWidth": "20px"}),
+                        # Icon takes exactly the collapsed nav width, centers itself
+                        html.Span(icon, style={
+                            "fontSize": "1.1rem",
+                            "width": f"{NAV_WIDTH_CLOSED}px",
+                            "minWidth": f"{NAV_WIDTH_CLOSED}px",
+                            "textAlign": "center",
+                            "flexShrink": 0,
+                        }),
                         html.Span(label, className="nav-label",
-                                  style={"marginLeft": "10px", "fontSize": "0.80rem",
+                                  style={"fontSize": "0.80rem",
                                          "whiteSpace": "nowrap", "overflow": "hidden"}),
                     ],
                     id={"type": "nav-btn", "index": wid},
@@ -61,18 +70,17 @@ def _build_nav_buttons(active_id="greeks"):
                         "width": "100%",
                         "display": "flex",
                         "alignItems": "center",
-                        "padding": "10px 12px",
+                        "padding": "10px 0",
                         "border": "none",
-                        "borderRadius": "6px",
+                        "borderRadius": "0",
                         "cursor": "pointer",
-                        "textAlign": "left",
                         "color": "#fff" if is_active else "#aaa",
                         "backgroundColor": "rgba(255,255,255,0.08)" if is_active else "transparent",
                         "fontWeight": "600" if is_active else "400",
                         "transition": "all 0.15s",
                     },
                 ),
-                style={"marginBottom": "4px"},
+                style={"marginBottom": "2px"},
             )
         )
     return buttons
@@ -103,7 +111,7 @@ nav_sidebar = html.Div(
         html.Div(
             id="nav-buttons",
             children=_build_nav_buttons("greeks"),
-            style={"padding": "0 6px"},
+            style={"padding": "0"},
         ),
     ],
     style={
@@ -129,7 +137,7 @@ nav_store = dcc.Store(id="store-nav", data={"open": True, "active": "greeks"})
 
 settings_sidebar = html.Div(
     [
-        html.H5("Settings", className="mb-3",
+        html.H5("Greeks Visualizer", className="mb-3",
                  style={"letterSpacing": "0.05em"}),
 
         # Ticker
@@ -340,11 +348,113 @@ greeks_widget = html.Div(
     style={"display": "flex", "flex": 1, "height": "100vh", "overflow": "hidden"},
 )
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  MARKET MATRIX WIDGET
+# ══════════════════════════════════════════════════════════════════════════════
+
+MATRIX_TICKERS = ["SPX", "SPY", "NDX", "QQQ"]
+
+matrix_settings = html.Div(
+    [
+        html.H5("Market Matrix", className="mb-3",
+                 style={"letterSpacing": "0.05em"}),
+
+        dbc.Label("Greek", className="fw-bold mt-1",
+                  style={"fontSize": "0.85rem"}),
+        dcc.Dropdown(
+            id="matrix-greek",
+            options=[
+                {"label": "Gamma (GEX)", "value": "gamma_exp"},
+                {"label": "Charm",       "value": "charm_exp"},
+                {"label": "Vanna",       "value": "vanna_exp"},
+                {"label": "DEX (Delta)", "value": "dex_exp"},
+                {"label": "Zomma",       "value": "zomma_exp"},
+            ],
+            value="gamma_exp", clearable=False, className="mb-3",
+            style={"color": "#111"},
+        ),
+
+        dbc.Label("Exposure Mode", className="fw-bold",
+                  style={"fontSize": "0.85rem"}),
+        dbc.RadioItems(
+            id="matrix-mode",
+            options=[
+                {"label": "Open Interest",    "value": "oi"},
+                {"label": "Session Volume",   "value": "volume"},
+                {"label": "Combined (OI+Vol)", "value": "combined"},
+            ],
+            value="oi",
+            className="mb-3",
+        ),
+
+        html.Hr(),
+
+        dbc.Label("Refresh Interval", className="fw-bold",
+                  style={"fontSize": "0.85rem"}),
+        html.Div(id="matrix-refresh-label", className="text-info mb-1",
+                 style={"fontSize": "0.80rem"}),
+        dcc.Slider(
+            id="matrix-refresh-slider",
+            min=10, max=300, step=10,
+            value=30,
+            marks={10: "10s", 30: "30s", 60: "1m", 120: "2m", 300: "5m"},
+            tooltip={"placement": "bottom"},
+            className="mb-3",
+        ),
+
+        html.Hr(),
+
+        html.Div(id="matrix-status", className="text-muted",
+                 style={"fontSize": "0.75rem", "whiteSpace": "pre-line"}),
+    ],
+    style={
+        "width": f"{SIDEBAR_WIDTH}px",
+        "minWidth": f"{SIDEBAR_WIDTH}px",
+        "height": "100vh",
+        "overflowY": "auto",
+        "padding": "12px",
+        "borderRight": "1px solid rgba(255,255,255,0.08)",
+    },
+)
+
+matrix_charts = html.Div(
+    [
+        html.Div(
+            dcc.Graph(id="matrix-chart-SPX", style={"height": "100%"}),
+            style={"flex": 1, "minWidth": 0, "minHeight": 0},
+        ),
+        html.Div(
+            dcc.Graph(id="matrix-chart-SPY", style={"height": "100%"}),
+            style={"flex": 1, "minWidth": 0, "minHeight": 0},
+        ),
+        html.Div(
+            dcc.Graph(id="matrix-chart-NDX", style={"height": "100%"}),
+            style={"flex": 1, "minWidth": 0, "minHeight": 0},
+        ),
+        html.Div(
+            dcc.Graph(id="matrix-chart-QQQ", style={"height": "100%"}),
+            style={"flex": 1, "minWidth": 0, "minHeight": 0},
+        ),
+    ],
+    style={
+        "flex": 1,
+        "display": "flex",
+        "height": "100vh",
+        "overflow": "hidden",
+    },
+)
+
+matrix_widget = html.Div(
+    id="widget-matrix",
+    children=[matrix_settings, matrix_charts],
+    style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
+)
+
 # -- Widget content area (shows the active widget) --
 
 widget_content = html.Div(
     id="widget-content",
-    children=[greeks_widget],
+    children=[greeks_widget, matrix_widget],
     style={"flex": 1, "display": "flex", "overflow": "hidden"},
 )
 
@@ -411,7 +521,138 @@ def toggle_nav(n, nav_data):
     return style, nav_data
 
 
-# ── Existing callbacks ──────────────────────────────────────────────────────
+# ── Nav button click → switch active widget ─────────────────────────────────
+
+@app.callback(
+    Output("widget-greeks", "style"),
+    Output("widget-matrix", "style"),
+    Output("nav-buttons", "children"),
+    Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def switch_widget(n_clicks_list):
+    """Show/hide widgets based on which nav button was clicked."""
+    triggered = ctx.triggered_id
+    if triggered is None:
+        raise dash.exceptions.PreventUpdate
+
+    active = triggered.get("index", "greeks") if isinstance(triggered, dict) else "greeks"
+
+    base = {"flex": 1, "height": "100vh", "overflow": "hidden"}
+
+    greeks_style = {**base, "display": "flex" if active == "greeks" else "none"}
+    matrix_style = {**base, "display": "flex" if active == "matrix" else "none"}
+
+    # Rebuild nav buttons with updated active highlight
+    nav_buttons = _build_nav_buttons(active_id=active)
+
+    return greeks_style, matrix_style, nav_buttons
+
+
+# ── Market Matrix refresh slider ─────────────────────────────────────────────
+
+@app.callback(
+    Output("matrix-refresh-label", "children"),
+    Input("matrix-refresh-slider", "value"),
+)
+def on_matrix_refresh_change(val):
+    if matrix_data.matrix_manager:
+        matrix_data.matrix_manager._refresh = val
+    if val >= 60:
+        return f"{val // 60}m {val % 60}s" if val % 60 else f"{val // 60}m"
+    return f"{val}s"
+
+
+# ── Market Matrix poll callback ──────────────────────────────────────────────
+
+MATRIX_GREEK_LABELS = {
+    "gamma_exp": "Gamma (GEX)",
+    "charm_exp": "Charm",
+    "vanna_exp": "Vanna",
+    "dex_exp":   "DEX (Delta)",
+    "zomma_exp": "Zomma",
+}
+
+MATRIX_GREEK_COLORS = {
+    "gamma_exp": ("#00d4aa", "#ff4d6a"),
+    "charm_exp": ("#4dabf7", "#f783ac"),
+    "vanna_exp": ("#a78bfa", "#fb923c"),
+    "dex_exp":   ("#26c6da", "#ff7043"),
+    "zomma_exp": ("#66bb6a", "#ef5350"),
+}
+
+@app.callback(
+    Output("matrix-chart-SPX", "figure"),
+    Output("matrix-chart-SPY", "figure"),
+    Output("matrix-chart-NDX", "figure"),
+    Output("matrix-chart-QQQ", "figure"),
+    Output("matrix-status", "children"),
+    Input("interval-poll", "n_intervals"),
+    Input("matrix-greek", "value"),
+    Input("matrix-mode", "value"),
+)
+def poll_matrix(n, greek_col, mode):
+    if not matrix_data.matrix_manager:
+        e = _empty_fig("Starting Matrix...")
+        return e, e, e, e, "Initialising..."
+
+    caches = matrix_data.matrix_manager.get_all_caches()
+    figures = []
+    status_lines = []
+
+    for ticker in MATRIX_TICKERS:
+        cache = caches.get(ticker, {})
+        error = cache.get("error")
+
+        if error:
+            figures.append(_empty_fig(f"{ticker}: {error}"))
+            status_lines.append(f"{ticker}: {error}")
+            continue
+
+        # Pick the right pre-computed exposure for the selected mode
+        mode_key = {"oi": "exp_oi", "volume": "exp_vol",
+                    "combined": "exp_combined"}.get(mode, "exp_oi")
+        exp_df = cache.get(mode_key)
+        spot = cache.get("spot", 0)
+        expiry = cache.get("expiry", "")
+
+        if exp_df is None or exp_df.empty:
+            figures.append(_empty_fig(f"{ticker}: No data"))
+            status_lines.append(f"{ticker}: No data")
+            continue
+
+        # Format expiry for title
+        if len(expiry) == 8:
+            nice_exp = f"{expiry[4:6]}/{expiry[6:]}"
+        else:
+            nice_exp = expiry
+
+        label = MATRIX_GREEK_LABELS.get(greek_col, greek_col)
+        colors = MATRIX_GREEK_COLORS.get(greek_col, ("#00d4aa", "#ff4d6a"))
+        title = f"{ticker}  {label}  ({nice_exp})"
+
+        fig = _build_chart(
+            exp_df, "strike", greek_col,
+            title, spot, colors[0], colors[1],
+            lines=[
+                {"type": "exposure_max", "label": "Max Pos",
+                 "color": colors[0], "side": "left"},
+                {"type": "exposure_min", "label": "Max Neg",
+                 "color": colors[1], "side": "left"},
+            ],
+            compact=True,
+        )
+        figures.append(fig)
+
+        ts = cache.get("timestamp", 0)
+        t_str = dt.datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S") if ts else "?"
+        status_lines.append(f"{ticker}: ${spot:,.1f} ({nice_exp}) @ {t_str}")
+
+    status = "\n".join(status_lines)
+    return figures[0], figures[1], figures[2], figures[3], status
+
+
+# ── Greeks Visualizer callbacks ──────────────────────────────────────────────
 
 @app.callback(
     Output("dropdown-expiry", "options"),
@@ -1694,4 +1935,5 @@ def _empty_fig(msg="No data"):
 
 if __name__ == "__main__":
     data_fetcher.init_data_manager(use_mock=True)
+    matrix_data.init_matrix_manager(use_mock=True)
     app.run(debug=True, host="0.0.0.0", port=8050)
