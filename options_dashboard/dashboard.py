@@ -11,7 +11,7 @@ import datetime as dt
 import numpy as np
 
 import dash
-from dash import dcc, html, Input, Output, State, ALL, ctx
+from dash import dcc, html, Input, Output, State, ALL, ctx, dash_table
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -19,6 +19,7 @@ from plotly.subplots import make_subplots
 from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
 import matrix_data
+import cot_scraper
 from greek_calculator import (compute_exposure, compute_live_metrics,
                              classify_regime, compute_vanna_vix_signal,
                              compute_charm_clock)
@@ -41,6 +42,7 @@ NAV_WIDTH_CLOSED = 44
 WIDGETS = {
     "greeks": ("Greeks Visualizer", "\U0001F4CA"),
     "matrix": ("Market Matrix", "\U0001F5FA"),
+    "cot":    ("COT Board",     "\U0001F4CB"),
 }
 
 def _build_nav_buttons(active_id="greeks"):
@@ -129,6 +131,7 @@ nav_sidebar = html.Div(
 
 # Store for nav state
 nav_store = dcc.Store(id="store-nav", data={"open": True, "active": "greeks"})
+matrix_prev_store = dcc.Store(id="store-matrix-prev", data={})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -387,6 +390,17 @@ matrix_settings = html.Div(
             className="mb-3",
         ),
 
+        dbc.Label("View", className="fw-bold",
+                  style={"fontSize": "0.85rem"}),
+        dbc.RadioItems(
+            id="matrix-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-3",
+        ),
+
         html.Hr(),
 
         dbc.Label("Refresh Interval", className="fw-bold",
@@ -450,11 +464,122 @@ matrix_widget = html.Div(
     style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
 )
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  COT BOARD WIDGET
+# ══════════════════════════════════════════════════════════════════════════════
+
+COT_COLUMNS = [
+    {"name": "Symbol",                "id": "symbol"},
+    {"name": "Long Contracts",        "id": "long",           "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Short Contracts",       "id": "short",          "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Long Contracts Change", "id": "long_change",    "type": "numeric", "format": {"specifier": "+,"}},
+    {"name": "Short Contracts Change","id": "short_change",   "type": "numeric", "format": {"specifier": "+,"}},
+    {"name": "Long % Amount",         "id": "long_pct",       "type": "numeric", "format": {"specifier": ".2f"}},
+    {"name": "Short % Amount",        "id": "short_pct",      "type": "numeric", "format": {"specifier": ".2f"}},
+    {"name": "Net % Change",          "id": "net_pct_change", "type": "numeric", "format": {"specifier": "+.2f"}},
+    {"name": "Net Position",          "id": "net_position",   "type": "numeric", "format": {"specifier": "+,"}},
+    {"name": "Open Interest",         "id": "open_interest",  "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Open Interest Change",  "id": "oi_change",      "type": "numeric", "format": {"specifier": "+,"}},
+]
+
+cot_widget = html.Div(
+    id="widget-cot",
+    children=[
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.H4("COT Board", style={"margin": 0, "color": "#fff"}),
+                        html.Div(id="cot-meta",
+                                 style={"fontSize": "0.80rem", "color": "#aaa",
+                                        "marginTop": "2px"}),
+                    ],
+                    style={"marginBottom": "12px"},
+                ),
+                dash_table.DataTable(
+                    id="cot-table",
+                    columns=COT_COLUMNS,
+                    data=[],
+                    sort_action="native",
+                    style_table={
+                        "overflowX": "auto",
+                        "overflowY": "auto",
+                        "height": "calc(100vh - 100px)",
+                    },
+                    style_cell={
+                        "backgroundColor": "#1e1e1e",
+                        "color": "#e0e0e0",
+                        "fontFamily": "monospace",
+                        "fontSize": "0.82rem",
+                        "padding": "8px 10px",
+                        "border": "1px solid rgba(255,255,255,0.05)",
+                        "textAlign": "right",
+                        "whiteSpace": "nowrap",
+                    },
+                    style_header={
+                        "backgroundColor": "#2a2a2a",
+                        "color": "#fff",
+                        "fontWeight": "600",
+                        "fontSize": "0.78rem",
+                        "borderBottom": "2px solid rgba(255,255,255,0.15)",
+                        "textAlign": "center",
+                    },
+                    style_cell_conditional=[
+                        {"if": {"column_id": "symbol"},
+                         "textAlign": "left", "fontWeight": "600",
+                         "color": "#facc15", "minWidth": "140px"},
+                    ],
+                    style_data_conditional=[
+                        # Positive changes → green
+                        {"if": {"column_id": "long_change",
+                                "filter_query": "{long_change} > 0"},
+                         "color": "#66bb6a"},
+                        {"if": {"column_id": "long_change",
+                                "filter_query": "{long_change} < 0"},
+                         "color": "#ef5350"},
+                        {"if": {"column_id": "short_change",
+                                "filter_query": "{short_change} > 0"},
+                         "color": "#ef5350"},
+                        {"if": {"column_id": "short_change",
+                                "filter_query": "{short_change} < 0"},
+                         "color": "#66bb6a"},
+                        {"if": {"column_id": "net_pct_change",
+                                "filter_query": "{net_pct_change} > 0"},
+                         "color": "#66bb6a"},
+                        {"if": {"column_id": "net_pct_change",
+                                "filter_query": "{net_pct_change} < 0"},
+                         "color": "#ef5350"},
+                        {"if": {"column_id": "net_position",
+                                "filter_query": "{net_position} > 0"},
+                         "color": "#66bb6a"},
+                        {"if": {"column_id": "net_position",
+                                "filter_query": "{net_position} < 0"},
+                         "color": "#ef5350"},
+                        {"if": {"column_id": "oi_change",
+                                "filter_query": "{oi_change} > 0"},
+                         "color": "#66bb6a"},
+                        {"if": {"column_id": "oi_change",
+                                "filter_query": "{oi_change} < 0"},
+                         "color": "#ef5350"},
+                    ],
+                ),
+            ],
+            style={
+                "padding": "16px",
+                "width": "100%",
+                "height": "100vh",
+                "overflow": "hidden",
+            },
+        ),
+    ],
+    style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
+)
+
 # -- Widget content area (shows the active widget) --
 
 widget_content = html.Div(
     id="widget-content",
-    children=[greeks_widget, matrix_widget],
+    children=[greeks_widget, matrix_widget, cot_widget],
     style={"flex": 1, "display": "flex", "overflow": "hidden"},
 )
 
@@ -468,6 +593,7 @@ app.layout = html.Div(
     [
         poll_timer,
         nav_store,
+        matrix_prev_store,
         nav_sidebar,
         widget_content,
     ],
@@ -526,6 +652,7 @@ def toggle_nav(n, nav_data):
 @app.callback(
     Output("widget-greeks", "style"),
     Output("widget-matrix", "style"),
+    Output("widget-cot", "style"),
     Output("nav-buttons", "children"),
     Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
@@ -542,11 +669,12 @@ def switch_widget(n_clicks_list):
 
     greeks_style = {**base, "display": "flex" if active == "greeks" else "none"}
     matrix_style = {**base, "display": "flex" if active == "matrix" else "none"}
+    cot_style    = {**base, "display": "flex" if active == "cot"    else "none"}
 
     # Rebuild nav buttons with updated active highlight
     nav_buttons = _build_nav_buttons(active_id=active)
 
-    return greeks_style, matrix_style, nav_buttons
+    return greeks_style, matrix_style, cot_style, nav_buttons
 
 
 # ── Market Matrix refresh slider ─────────────────────────────────────────────
@@ -587,18 +715,31 @@ MATRIX_GREEK_COLORS = {
     Output("matrix-chart-NDX", "figure"),
     Output("matrix-chart-QQQ", "figure"),
     Output("matrix-status", "children"),
+    Output("store-matrix-prev", "data"),
     Input("interval-poll", "n_intervals"),
     Input("matrix-greek", "value"),
     Input("matrix-mode", "value"),
+    Input("matrix-view", "value"),
+    State("store-matrix-prev", "data"),
 )
-def poll_matrix(n, greek_col, mode):
+def poll_matrix(n, greek_col, mode, view, prev_data):
     if not matrix_data.matrix_manager:
         e = _empty_fig("Starting Matrix...")
-        return e, e, e, e, "Initialising..."
+        return e, e, e, e, "Initialising...", dash.no_update
 
     caches = matrix_data.matrix_manager.get_all_caches()
     figures = []
     status_lines = []
+
+    if prev_data is None:
+        prev_data = {}
+
+    # Build new prev store structure per ticker
+    new_prev = {"_greek": greek_col, "_mode": mode}
+
+    # Reset prev tracking if greek or mode changed
+    greek_or_mode_changed = (prev_data.get("_greek") != greek_col or
+                              prev_data.get("_mode") != mode)
 
     for ticker in MATRIX_TICKERS:
         cache = caches.get(ticker, {})
@@ -631,25 +772,89 @@ def poll_matrix(n, greek_col, mode):
         colors = MATRIX_GREEK_COLORS.get(greek_col, ("#00d4aa", "#ff4d6a"))
         title = f"{ticker}  {label}  ({nice_exp})"
 
-        fig = _build_chart(
-            exp_df, "strike", greek_col,
-            title, spot, colors[0], colors[1],
-            lines=[
-                {"type": "exposure_max", "label": "Max Pos",
-                 "color": colors[0], "side": "left"},
-                {"type": "exposure_min", "label": "Max Neg",
-                 "color": colors[1], "side": "left"},
-            ],
-            compact=True,
-        )
+        # Track per-ticker previous values for delta display
+        cur_snap = {str(r["strike"]): r[greek_col] for _, r in exp_df.iterrows()}
+        ts = cache.get("timestamp", 0)
+
+        prev_ticker = prev_data.get(ticker, {})
+        prev_ts = prev_ticker.get("_ts", 0)
+
+        if greek_or_mode_changed:
+            dp = {}
+            new_prev[ticker] = {
+                "_ts":          ts,
+                "display_prev": {},
+                "current":      cur_snap,
+            }
+        elif ts != prev_ts:
+            # New fetch — rotate
+            dp = prev_ticker.get("current", {})
+            new_prev[ticker] = {
+                "_ts":          ts,
+                "display_prev": dp,
+                "current":      cur_snap,
+            }
+        else:
+            dp = prev_ticker.get("display_prev", {})
+            new_prev[ticker] = prev_ticker  # no change
+
+        if view == "values":
+            fig = _build_value_view(
+                exp_df, "strike", greek_col,
+                title, spot, dp,
+                compact=True,
+            )
+        else:
+            fig = _build_chart(
+                exp_df, "strike", greek_col,
+                title, spot, colors[0], colors[1],
+                lines=[
+                    {"type": "exposure_max", "label": "Max Pos",
+                     "color": colors[0], "side": "left"},
+                    {"type": "exposure_min", "label": "Max Neg",
+                     "color": colors[1], "side": "left"},
+                ],
+                compact=True,
+            )
         figures.append(fig)
 
-        ts = cache.get("timestamp", 0)
         t_str = dt.datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S") if ts else "?"
         status_lines.append(f"{ticker}: ${spot:,.1f} ({nice_exp}) @ {t_str}")
 
     status = "\n".join(status_lines)
-    return figures[0], figures[1], figures[2], figures[3], status
+    return figures[0], figures[1], figures[2], figures[3], status, new_prev
+
+
+# ── COT Board poll callback ──────────────────────────────────────────────────
+
+@app.callback(
+    Output("cot-table", "data"),
+    Output("cot-meta", "children"),
+    Input("interval-poll", "n_intervals"),
+)
+def poll_cot(n):
+    if not cot_scraper.cot_manager:
+        return [], "COT manager not initialized"
+
+    cache = cot_scraper.cot_manager.get_cache()
+    error = cache.get("error")
+    rows = cache.get("rows", [])
+    report_date = cache.get("report_date", "")
+    fetched_at = cache.get("fetched_at", 0)
+
+    if error and not rows:
+        return [], f"Error: {error}"
+
+    if fetched_at:
+        fetched_str = dt.datetime.fromtimestamp(fetched_at, tz=ET).strftime("%Y-%m-%d %H:%M:%S ET")
+    else:
+        fetched_str = "—"
+
+    meta = (f"Report date: {report_date}  |  "
+            f"Symbols: {len(rows)}  |  "
+            f"Last fetch: {fetched_str}")
+
+    return rows, meta
 
 
 # ── Greeks Visualizer callbacks ──────────────────────────────────────────────
@@ -1936,4 +2141,5 @@ def _empty_fig(msg="No data"):
 if __name__ == "__main__":
     data_fetcher.init_data_manager(use_mock=True)
     matrix_data.init_matrix_manager(use_mock=True)
+    cot_scraper.init_cot_manager()
     app.run(debug=True, host="0.0.0.0", port=8050)

@@ -27,8 +27,18 @@ USE_MOCK = False
 def _make_underlying(ticker: str):
     """Return Stock or Index contract depending on the ticker."""
     from ib_insync import Stock, Index
-    if ticker.upper() in INDEX_TICKERS:
-        return Index(ticker, "CBOE", "USD")
+    t = ticker.upper()
+    if t in INDEX_TICKERS:
+        # Each index has its own native exchange
+        exch = {
+            "SPX": "CBOE",
+            "NDX": "NASDAQ",
+            "RUT": "RUSSELL",
+            "VIX": "CBOE",
+            "DJX": "CBOE",
+            "XSP": "CBOE",
+        }.get(t, "CBOE")
+        return Index(t, exch, "USD")
     return Stock(ticker, "SMART", "USD")
 
 
