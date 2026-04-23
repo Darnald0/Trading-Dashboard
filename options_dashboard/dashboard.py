@@ -20,9 +20,10 @@ from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
 import matrix_data
 import cot_scraper
+import claude_analyst
 from greek_calculator import (compute_exposure, compute_live_metrics,
                              classify_regime, compute_vanna_vix_signal,
-                             compute_charm_clock)
+                             compute_charm_clock, compute_trade_signal)
 
 app = dash.Dash(
     __name__,
@@ -212,11 +213,32 @@ settings_sidebar = html.Div(
         dbc.RadioItems(
             id="radio-charm-view",
             options=[
-                {"label": "Bar",     "value": "bar"},
-                {"label": "Heatmap", "value": "heatmap"},
-                {"label": "Values",  "value": "values"},
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
             ],
-            value="heatmap", inline=True, className="mb-2",
+            value="bar", inline=True, className="mb-2",
+        ),
+
+        dbc.Label("Vomma View", className="fw-bold",
+                  style={"fontSize": "0.80rem"}),
+        dbc.RadioItems(
+            id="radio-vomma-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-2",
+        ),
+
+        dbc.Label("Speed View", className="fw-bold",
+                  style={"fontSize": "0.80rem"}),
+        dbc.RadioItems(
+            id="radio-speed-view",
+            options=[
+                {"label": "Bar",    "value": "bar"},
+                {"label": "Values", "value": "values"},
+            ],
+            value="bar", inline=True, className="mb-2",
         ),
 
         dbc.Label("Vanna View", className="fw-bold",
@@ -258,8 +280,8 @@ settings_sidebar = html.Div(
     },
 )
 
-# Layout:  Settings | Gamma       | Charm (70%)
-#                                 | Vanna | DEX | Zomma (30%)
+# Layout:  Settings | Gamma | Top row: Charm + Vomma + Speed
+#                            | Bottom row: Vanna + DEX + Zomma
 charts_panel = html.Div(
     [
         # Left column: Gamma (full height)
@@ -267,14 +289,32 @@ charts_panel = html.Div(
             dcc.Graph(id="chart-gamma", style={"height": "100%"}),
             style={"flex": 0.7, "minWidth": 0},
         ),
-        # Right column: Charm on top, Vanna+DEX+Zomma on bottom
+        # Right column: top row (3 charts), bottom row (3 charts)
         html.Div(
             [
+                # Top row: Charm + Vomma + Speed
                 html.Div(
-                    dcc.Graph(id="chart-charm", style={"height": "100%"}),
-                    style={"flex": 7, "minHeight": 0},
+                    [
+                        html.Div(
+                            dcc.Graph(id="chart-charm", style={"height": "100%"}),
+                            style={"flex": 1, "minWidth": 0},
+                        ),
+                        html.Div(
+                            dcc.Graph(id="chart-vomma", style={"height": "100%"}),
+                            style={"flex": 1, "minWidth": 0},
+                        ),
+                        html.Div(
+                            dcc.Graph(id="chart-speed", style={"height": "100%"}),
+                            style={"flex": 1, "minWidth": 0},
+                        ),
+                    ],
+                    style={
+                        "flex": 1,
+                        "minHeight": 0,
+                        "display": "flex",
+                    },
                 ),
-                # Bottom row: Vanna + DEX + Zomma side by side
+                # Bottom row: Vanna + DEX + Zomma
                 html.Div(
                     [
                         html.Div(
@@ -291,9 +331,92 @@ charts_panel = html.Div(
                         ),
                     ],
                     style={
-                        "flex": 3,
+                        "flex": 1,
                         "minHeight": 0,
                         "display": "flex",
+                    },
+                ),
+                # Signal panel row: rule-based (left) + Claude analyst (right)
+                html.Div(
+                    [
+                        # Left half: rule-based signal
+                        html.Div(
+                            id="signal-panel",
+                            children="Analyzing...",
+                            style={
+                                "flex": 1,
+                                "minWidth": 0,
+                                "padding": "10px 14px",
+                                "overflowY": "auto",
+                                "fontSize": "0.82rem",
+                                "borderRight": "1px solid rgba(255,255,255,0.10)",
+                            },
+                        ),
+                        # Right half: Claude-powered analyst
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Span("Claude Analyst",
+                                                  style={"fontSize": "0.85rem",
+                                                         "fontWeight": "600",
+                                                         "color": "#c4a3ff",
+                                                         "letterSpacing": "0.05em"}),
+                                        html.Button(
+                                            "Analyze Now",
+                                            id="btn-claude-analyze",
+                                            n_clicks=0,
+                                            style={
+                                                "marginLeft": "auto",
+                                                "padding": "4px 12px",
+                                                "border": "1px solid #7c4dff",
+                                                "borderRadius": "4px",
+                                                "backgroundColor": "rgba(124,77,255,0.15)",
+                                                "color": "#c4a3ff",
+                                                "cursor": "pointer",
+                                                "fontSize": "0.78rem",
+                                                "fontWeight": "600",
+                                            },
+                                        ),
+                                    ],
+                                    style={"display": "flex",
+                                           "alignItems": "center",
+                                           "marginBottom": "6px"},
+                                ),
+                                dcc.Loading(
+                                    id="claude-loading",
+                                    type="dot",
+                                    color="#c4a3ff",
+                                    children=html.Div(
+                                        id="claude-panel",
+                                        children=[
+                                            html.Div(
+                                                "Press \"Analyze Now\" to get "
+                                                "a Claude-powered trade analysis "
+                                                "using all current dashboard data.",
+                                                style={"color": "#888",
+                                                       "fontSize": "0.80rem",
+                                                       "fontStyle": "italic"},
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                            ],
+                            style={
+                                "flex": 1,
+                                "minWidth": 0,
+                                "padding": "10px 14px",
+                                "overflowY": "auto",
+                                "fontSize": "0.82rem",
+                            },
+                        ),
+                    ],
+                    style={
+                        "flex": 0.7,
+                        "minHeight": 0,
+                        "display": "flex",
+                        "backgroundColor": "rgba(0,0,0,0.35)",
+                        "borderTop": "1px solid rgba(255,255,255,0.10)",
                     },
                 ),
             ],
@@ -709,6 +832,13 @@ MATRIX_GREEK_COLORS = {
     "zomma_exp": ("#66bb6a", "#ef5350"),
 }
 
+MATRIX_Y_DTICK = {
+    "SPX": 5,
+    "SPY": 1,
+    "NDX": 10,
+    "QQQ": 1,
+}
+
 @app.callback(
     Output("matrix-chart-SPX", "figure"),
     Output("matrix-chart-SPY", "figure"),
@@ -803,6 +933,7 @@ def poll_matrix(n, greek_col, mode, view, prev_data):
                 exp_df, "strike", greek_col,
                 title, spot, dp,
                 compact=True,
+                ultra_compact=True,
             )
         else:
             fig = _build_chart(
@@ -815,6 +946,7 @@ def poll_matrix(n, greek_col, mode, view, prev_data):
                      "color": colors[1], "side": "left"},
                 ],
                 compact=True,
+                y_dtick=MATRIX_Y_DTICK.get(ticker),
             )
         figures.append(fig)
 
@@ -823,6 +955,141 @@ def poll_matrix(n, greek_col, mode, view, prev_data):
 
     status = "\n".join(status_lines)
     return figures[0], figures[1], figures[2], figures[3], status, new_prev
+
+
+# ── Claude Analyst button callback ───────────────────────────────────────────
+
+@app.callback(
+    Output("claude-panel", "children"),
+    Input("btn-claude-analyze", "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_claude_analyze(n_clicks):
+    """Fires when the user clicks 'Analyze Now' — sends current dashboard
+    state to the Claude API and returns the formatted analysis."""
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    if not data_fetcher.data_manager:
+        return html.Div("Data manager not ready.",
+                        style={"color": "#ef5350"})
+
+    cache = data_fetcher.data_manager.get_cache()
+    chain = cache.get("chain")
+    if chain is None or (hasattr(chain, "empty") and chain.empty):
+        return html.Div("No chain data yet — wait for the first fetch.",
+                        style={"color": "#ff9800"})
+
+    # Build snapshot of everything
+    ticker   = cache["ticker"]
+    spot     = cache["spot"]
+    resolved = cache["expiry"]
+    mode     = SETTINGS.greek_mode
+
+    exp_df = compute_exposure(chain, spot, greek_mode=mode)
+    regime = classify_regime(exp_df, spot) if not exp_df.empty else {}
+    live   = compute_live_metrics(chain, spot)
+
+    vix_data = cache.get("vix", {"current": 0, "prev_close": 0})
+    vv = compute_vanna_vix_signal(exp_df,
+                                   vix_data.get("current", 0),
+                                   vix_data.get("prev_close", 0))
+    cc = compute_charm_clock(exp_df, spot)
+
+    from greek_calculator import compute_skew, compute_pinning_strength
+    import session_store
+    skew = compute_skew(chain, spot)
+
+    # Term structure
+    term_raw = cache.get("term_structure", {})
+    front_iv = live.get("atm_iv", 0)
+    back_iv = term_raw.get("back_iv", 0)
+    if front_iv > 0 and back_iv > 0:
+        ratio = front_iv / back_iv
+        state = "BACKWARDATION" if ratio > 1.05 else ("CONTANGO" if ratio < 0.95 else "FLAT")
+    else:
+        ratio = 0
+        state = "N/A"
+    term = {"front_iv": front_iv, "back_iv": back_iv,
+            "back_dte": term_raw.get("back_dte", 0),
+            "ratio": round(ratio, 3), "state": state}
+
+    iv_rank = session_store.get_iv_rank_percentile(ticker, front_iv)
+
+    dte_years_val = chain["dte_years"].values[0] if not chain.empty else None
+    pinning = compute_pinning_strength(exp_df, chain, spot, dte_years=dte_years_val)
+
+    rule_signal = compute_trade_signal(
+        spot, regime, vv, cc, skew, term, iv_rank, pinning, live, exp_df,
+    )
+
+    # Top strikes (by absolute gamma, near ATM)
+    exp_near = exp_df.copy()
+    exp_near["dist"] = (exp_near["strike"] - spot).abs()
+    exp_near = exp_near.sort_values("dist").head(20)
+    exp_near = exp_near.sort_values(
+        "gamma_exp", key=lambda s: s.abs(), ascending=False).head(12)
+    top_strikes = exp_near.to_dict("records")
+
+    # DTE
+    exp_date = dt.date(int(resolved[:4]), int(resolved[4:6]), int(resolved[6:]))
+    dte_calendar = max((exp_date - dt.date.today()).days, 0)
+
+    data = {
+        "ticker":          ticker,
+        "spot":            spot,
+        "expiry":          resolved,
+        "dte":             dte_calendar,
+        "mode":            mode,
+        "regime":          regime,
+        "vanna_vix":       vv,
+        "charm_clock":     cc,
+        "skew":            skew,
+        "term":            term,
+        "iv_rank":         iv_rank,
+        "pinning":         pinning,
+        "live_metrics":    live,
+        "prev_day_hl":     cache.get("prev_day_hl", {}),
+        "session_metrics": cache.get("session_metrics", {}),
+        "top_strikes":     top_strikes,
+        "rule_signal":     rule_signal,
+    }
+
+    result = claude_analyst.analyze(data)
+
+    if not result["ok"]:
+        return html.Div([
+            html.Div("Error calling Claude:", style={"color": "#ef5350",
+                                                      "fontWeight": "600",
+                                                      "marginBottom": "6px"}),
+            html.Pre(result["error"],
+                     style={"color": "#ef9a9a", "fontSize": "0.75rem",
+                            "whiteSpace": "pre-wrap"}),
+        ])
+
+    # Success — format the response as markdown
+    analysis = result["analysis"]
+    tokens_in = result.get("tokens_in", 0)
+    tokens_out = result.get("tokens_out", 0)
+    model = result.get("model", "?")
+    cost_est = (tokens_in * 3 + tokens_out * 15) / 1_000_000
+
+    ts = dt.datetime.now(tz=ET).strftime("%H:%M:%S ET")
+
+    return html.Div([
+        dcc.Markdown(
+            analysis,
+            style={"color": "#e0e0e0", "fontSize": "0.82rem",
+                   "lineHeight": "1.5"},
+        ),
+        html.Div(
+            f"— {model}  |  {tokens_in} in / {tokens_out} out tokens  |  "
+            f"${cost_est:.4f}  |  {ts}",
+            style={"marginTop": "10px", "paddingTop": "8px",
+                   "borderTop": "1px solid rgba(255,255,255,0.08)",
+                   "color": "#666", "fontSize": "0.70rem",
+                   "fontFamily": "monospace"},
+        ),
+    ])
 
 
 # ── COT Board poll callback ──────────────────────────────────────────────────
@@ -920,9 +1187,12 @@ def on_mode_change(mode):
 @app.callback(
     Output("chart-gamma", "figure"),
     Output("chart-charm", "figure"),
+    Output("chart-vomma", "figure"),
+    Output("chart-speed", "figure"),
     Output("chart-vanna", "figure"),
     Output("chart-dex", "figure"),
     Output("chart-zomma", "figure"),
+    Output("signal-panel", "children"),
     Output("metrics-header", "children"),
     Output("status-text", "children"),
     Output("dropdown-expiry", "options", allow_duplicate=True),
@@ -930,27 +1200,30 @@ def on_mode_change(mode):
     Input("interval-poll", "n_intervals"),
     Input("radio-gamma-view", "value"),
     Input("radio-charm-view", "value"),
+    Input("radio-vomma-view", "value"),
+    Input("radio-speed-view", "value"),
     Input("radio-vanna-view", "value"),
     Input("radio-zomma-view", "value"),
     State("store-prev-exposure", "data"),
     prevent_initial_call="initial_duplicate",
 )
-def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data):
+def poll_and_render(n, gamma_view, charm_view, vomma_view, speed_view,
+                    vanna_view, zomma_view, prev_data):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, e, e, "Loading...", "Initialising...", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "Analyzing...", "Loading...", "Initialising...", dash.no_update, dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, e, e, "Error", f"X  {error}", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "No signal (error)", "Error", f"X  {error}", dash.no_update, dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, e, e, "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "Waiting for data...", "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -1010,6 +1283,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     cur_snap = {
         "gamma": {str(r["strike"]): r["gamma_exp"] for _, r in exp_df.iterrows()},
         "charm": {str(r["strike"]): r["charm_exp"] for _, r in exp_df.iterrows()},
+        "vomma": {str(r["strike"]): r["vomma_exp"] for _, r in exp_df.iterrows()},
+        "speed": {str(r["strike"]): r["speed_exp"] for _, r in exp_df.iterrows()},
         "vanna": {str(r["strike"]): r["vanna_exp"] for _, r in exp_df.iterrows()},
         "dex":   {str(r["strike"]): r["dex_exp"]   for _, r in exp_df.iterrows()},
         "zomma": {str(r["strike"]): r["zomma_exp"] for _, r in exp_df.iterrows()},
@@ -1046,6 +1321,8 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
 
     prev_gamma = dp.get("gamma", {})
     prev_charm = dp.get("charm", {})
+    prev_vomma = dp.get("vomma", {})
+    prev_speed = dp.get("speed", {})
     prev_vanna = dp.get("vanna", {})
     prev_dex   = dp.get("dex", {})
     prev_zomma = dp.get("zomma", {})
@@ -1111,22 +1388,11 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                   history_dots=_hist("gamma"))
 
     # ── Charm ────────────────────────────────────────────────────────
+    # ── Charm ────────────────────────────────────────────────────────
     if charm_view == "values":
         fig_charm = _build_value_view(exp_df, "strike", "charm_exp",
                                        "Charm", spot, prev_charm,
-                                       open_price=open_spot)
-    elif charm_view == "heatmap":
-        history = data_fetcher.data_manager.get_charm_history()
-        # In flow/oi_flow mode, project charm from the appropriate chain
-        if mode == "flow" and flow_chain is not None and not flow_chain.empty:
-            fig_charm = _build_charm_heatmap(history, spot,
-                                              chain=flow_chain, greek_mode="oi")
-        elif mode == "oi_flow" and oi_flow_chain is not None and not oi_flow_chain.empty:
-            fig_charm = _build_charm_heatmap(history, spot,
-                                              chain=oi_flow_chain, greek_mode="oi")
-        else:
-            fig_charm = _build_charm_heatmap(history, spot,
-                                              chain=chain, greek_mode=mode)
+                                       compact=True, open_price=open_spot)
     else:
         fig_charm = _build_chart(exp_df, "strike", "charm_exp",
                                   "Charm", spot, "#4dabf7", "#f783ac",
@@ -1141,8 +1407,48 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
                                        "color": "#9e9e9e", "side": "left"},
                                       open_line,
                                   ],
-                                  show_spot=False,
+                                  compact=True,
                                   history_dots=_hist("charm"))
+
+    # ── Vomma ────────────────────────────────────────────────────────
+    if vomma_view == "values":
+        fig_vomma = _build_value_view(exp_df, "strike", "vomma_exp",
+                                       "Vomma", spot, prev_vomma,
+                                       compact=True, open_price=open_spot)
+    else:
+        fig_vomma = _build_chart(exp_df, "strike", "vomma_exp",
+                                  "Vomma", spot, "#ffb74d", "#7986cb",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos Vomma",
+                                       "color": "#ffb74d", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg Vomma",
+                                       "color": "#7986cb", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net Vomma",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      open_line,
+                                  ],
+                                  compact=True,
+                                  history_dots=_hist("vomma"))
+
+    # ── Speed ────────────────────────────────────────────────────────
+    if speed_view == "values":
+        fig_speed = _build_value_view(exp_df, "strike", "speed_exp",
+                                       "Speed", spot, prev_speed,
+                                       compact=True, open_price=open_spot)
+    else:
+        fig_speed = _build_chart(exp_df, "strike", "speed_exp",
+                                  "Speed", spot, "#ba68c8", "#81c784",
+                                  lines=[
+                                      {"type": "exposure_max", "label": "Max Pos Speed",
+                                       "color": "#ba68c8", "side": "left"},
+                                      {"type": "exposure_min", "label": "Max Neg Speed",
+                                       "color": "#81c784", "side": "left"},
+                                      {"type": "net_max", "label": "Max Net Speed",
+                                       "color": "#e0e0e0", "side": "left"},
+                                      open_line,
+                                  ],
+                                  compact=True,
+                                  history_dots=_hist("speed"))
 
     # ── Vanna ────────────────────────────────────────────────────────
     if vanna_view == "values":
@@ -1249,11 +1555,57 @@ def poll_and_render(n, gamma_view, charm_view, vanna_view, zomma_view, prev_data
     # ── Charm Decay Clock ────────────────────────────────────────────
     charm_clock = compute_charm_clock(exp_df, spot)
 
+    # ── Skew (25d put IV − 25d call IV) ──────────────────────────────
+    from greek_calculator import compute_skew, compute_pinning_strength
+    skew = compute_skew(chain, spot)
+
+    # ── Term structure ───────────────────────────────────────────────
+    term_raw = cache.get("term_structure", {})
+    front_iv = live_metrics.get("atm_iv", 0)
+    back_iv = term_raw.get("back_iv", 0)
+    if front_iv > 0 and back_iv > 0:
+        term_ratio = front_iv / back_iv
+        if term_ratio > 1.05:
+            term_state = "BACKWARDATION"
+        elif term_ratio < 0.95:
+            term_state = "CONTANGO"
+        else:
+            term_state = "FLAT"
+    else:
+        term_ratio = 0
+        term_state = "N/A"
+    term = {
+        "front_iv":    front_iv,
+        "back_iv":     back_iv,
+        "back_dte":    term_raw.get("back_dte", 0),
+        "ratio":       round(term_ratio, 3),
+        "state":       term_state,
+    }
+
+    # ── IV Rank / Percentile ─────────────────────────────────────────
+    import session_store
+    iv_rank = session_store.get_iv_rank_percentile(ticker, front_iv)
+
+    # ── Pinning Strength ─────────────────────────────────────────────
+    dte_years_val = chain["dte_years"].values[0] if (chain is not None and not chain.empty) else None
+    pinning = compute_pinning_strength(exp_df, chain, spot, dte_years=dte_years_val)
+
+    # ── Composite Trade Signal ───────────────────────────────────────
+    signal = compute_trade_signal(
+        spot, regime, vanna_vix, charm_clock,
+        skew, term, iv_rank, pinning, live_metrics, exp_df,
+    )
+    signal_panel = _build_signal_panel(signal)
+
     header = _build_metrics_header(ticker, spot, session_metrics,
                                     live_metrics, prev_hl, dte, updated,
-                                    regime, vanna_vix, charm_clock)
+                                    regime, vanna_vix, charm_clock,
+                                    skew=skew, term=term,
+                                    iv_rank=iv_rank, pinning=pinning)
 
-    return fig_gamma, fig_charm, fig_vanna, fig_dex, fig_zomma, header, status, opts, new_prev
+    return (fig_gamma, fig_charm, fig_vomma, fig_speed,
+            fig_vanna, fig_dex, fig_zomma,
+            signal_panel, header, status, opts, new_prev)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1398,8 +1750,246 @@ def _charm_clock_cell(charm_clock):
     return _metric_cell("Charm Clock", direction, color=color, sub=sub)
 
 
+def _skew_cell(skew):
+    """25-delta put IV minus 25-delta call IV."""
+    if not skew:
+        return _metric_cell("Skew", "N/A", color="#555", sub="No data")
+    val = skew.get("skew", 0) * 100   # display in vol points
+    pct = skew.get("skew_pct", 0)
+    # Positive skew = puts richer than calls = bearish sentiment
+    if val > 3:
+        color = "#ef5350"   # bearish skew
+    elif val < -1:
+        color = "#66bb6a"   # call skew (bullish)
+    else:
+        color = "#ffd54f"   # normal
+    return _metric_cell("Skew (25d)",
+                         f"{val:+.2f} pts",
+                         color=color,
+                         sub=f"{pct:+.1f}% of ATM IV")
+
+
+def _term_cell(term):
+    """Term structure — front/back IV ratio."""
+    if not term or term.get("state") == "N/A":
+        return _metric_cell("Term", "N/A", color="#555", sub="No back-month IV")
+    state = term["state"]
+    ratio = term.get("ratio", 1.0)
+    back_dte = term.get("back_dte", 0)
+    back_iv = term.get("back_iv", 0)
+    # Backwardation (front > back) = stressed / risk-off
+    # Contango (front < back) = normal
+    if state == "BACKWARDATION":
+        color = "#ef5350"
+    elif state == "CONTANGO":
+        color = "#66bb6a"
+    else:
+        color = "#ffd54f"
+    return _metric_cell("Term",
+                         state,
+                         color=color,
+                         sub=f"Ratio {ratio:.2f} | {back_dte}d {back_iv*100:.1f}%")
+
+
+def _iv_rank_cell(iv_rank):
+    """IV rank / percentile from 52-week history."""
+    if not iv_rank or iv_rank.get("iv_rank") is None:
+        return _metric_cell("IV Rank", "N/A", color="#555",
+                            sub="Building history...")
+    rank = iv_rank.get("iv_rank", 0)
+    pct = iv_rank.get("iv_percentile", 0)
+    days = iv_rank.get("history_days", 0)
+    # Low rank = cheap vol, high rank = expensive vol
+    if rank >= 70:
+        color = "#ef5350"   # expensive
+    elif rank <= 30:
+        color = "#66bb6a"   # cheap
+    else:
+        color = "#ffd54f"
+    return _metric_cell("IV Rank",
+                         f"{rank:.0f} / 100",
+                         color=color,
+                         sub=f"Pct {pct:.0f} | {days}d hist")
+
+
+def _pin_cell(pinning):
+    """Pinning strength score for 0DTE magnet strike."""
+    if not pinning or pinning.get("pin_strike") is None:
+        return _metric_cell("Pin", "N/A", color="#555", sub="No data")
+    strike = pinning.get("pin_strike", 0)
+    strength = pinning.get("pin_strength", 0)
+    dist = pinning.get("pin_distance", 0)
+    conf = pinning.get("confidence", "NONE")
+    # Strong pin = yellow, weak = grey
+    if conf == "HIGH":
+        color = "#ffd54f"
+    elif conf == "MEDIUM":
+        color = "#ffb74d"
+    elif conf == "LOW":
+        color = "#888"
+    else:
+        color = "#555"
+    return _metric_cell("Pin",
+                         f"${strike:,.0f}",
+                         color=color,
+                         sub=f"{conf} | {strength:.0f}/100 | ±${dist:,.1f}")
+
+
+def _build_signal_panel(signal):
+    """Render the composite trade signal as a rich HTML panel."""
+    if not signal:
+        return "Analyzing..."
+
+    direction = signal.get("direction", "NEUTRAL")
+    conviction = signal.get("conviction", "NONE")
+    setup = signal.get("setup", "")
+    entry = signal.get("entry")
+    stop = signal.get("stop_loss")
+    tp1 = signal.get("take_profit_1")
+    tp2 = signal.get("take_profit_2")
+    rr = signal.get("risk_reward", 0)
+    reasoning = signal.get("reasoning", [])
+    caveats = signal.get("caveats", [])
+    score = signal.get("score", 0)
+
+    # Direction color
+    if direction == "LONG":
+        dir_color = "#66bb6a"
+        dir_icon = "▲"
+    elif direction == "SHORT":
+        dir_color = "#ef5350"
+        dir_icon = "▼"
+    else:
+        dir_color = "#888"
+        dir_icon = "●"
+
+    # Conviction color
+    if conviction == "HIGH":
+        conv_color = "#66bb6a" if direction != "NEUTRAL" else "#888"
+    elif conviction == "MEDIUM":
+        conv_color = "#ffd54f"
+    elif conviction == "LOW":
+        conv_color = "#ff9800"
+    else:
+        conv_color = "#555"
+
+    def _level_block(label, value, color):
+        if value is None:
+            return html.Div([
+                html.Div(label, style={"fontSize": "0.72rem", "color": "#888",
+                                       "textTransform": "uppercase",
+                                       "letterSpacing": "0.08em"}),
+                html.Div("—", style={"fontSize": "1.05rem", "color": "#555",
+                                      "fontFamily": "monospace"}),
+            ], style={"padding": "0 14px", "borderRight": "1px solid rgba(255,255,255,0.06)"})
+        return html.Div([
+            html.Div(label, style={"fontSize": "0.72rem", "color": "#888",
+                                   "textTransform": "uppercase",
+                                   "letterSpacing": "0.08em"}),
+            html.Div(f"${value:,.2f}",
+                     style={"fontSize": "1.05rem", "color": color,
+                            "fontFamily": "monospace", "fontWeight": "600"}),
+        ], style={"padding": "0 14px", "borderRight": "1px solid rgba(255,255,255,0.06)"})
+
+    # ── Top row: direction / conviction / setup description ─────────
+    header_row = html.Div([
+        html.Div([
+            html.Span(dir_icon, style={"fontSize": "1.5rem", "color": dir_color,
+                                        "marginRight": "8px"}),
+            html.Span(direction, style={"fontSize": "1.2rem", "color": dir_color,
+                                         "fontWeight": "700", "letterSpacing": "0.05em"}),
+        ], style={"display": "flex", "alignItems": "center",
+                  "minWidth": "130px"}),
+
+        html.Div([
+            html.Div("Conviction", style={"fontSize": "0.72rem", "color": "#888",
+                                           "textTransform": "uppercase",
+                                           "letterSpacing": "0.08em"}),
+            html.Div(conviction, style={"fontSize": "1.0rem", "color": conv_color,
+                                         "fontWeight": "600"}),
+        ], style={"padding": "0 14px", "borderLeft": "1px solid rgba(255,255,255,0.08)",
+                  "borderRight": "1px solid rgba(255,255,255,0.06)"}),
+
+        html.Div([
+            html.Div("Setup", style={"fontSize": "0.72rem", "color": "#888",
+                                      "textTransform": "uppercase",
+                                      "letterSpacing": "0.08em"}),
+            html.Div(setup if setup else "—",
+                     style={"fontSize": "0.88rem", "color": "#e0e0e0"}),
+        ], style={"padding": "0 14px", "flex": 1, "minWidth": 0}),
+    ], style={"display": "flex", "alignItems": "center", "marginBottom": "10px"})
+
+    # ── Levels row: entry / stop / tp1 / tp2 / R:R ──────────────────
+    rr_color = "#66bb6a" if rr >= 2.0 else ("#ffd54f" if rr >= 1.0 else "#ef5350")
+    levels_row = html.Div([
+        _level_block("Entry", entry, "#ffd54f"),
+        _level_block("Stop Loss", stop, "#ef5350"),
+        _level_block("Target 1", tp1, "#66bb6a"),
+        _level_block("Target 2", tp2, "#4caf50"),
+        html.Div([
+            html.Div("R : R", style={"fontSize": "0.72rem", "color": "#888",
+                                      "textTransform": "uppercase",
+                                      "letterSpacing": "0.08em"}),
+            html.Div(f"{rr:.2f}" if rr > 0 else "—",
+                     style={"fontSize": "1.05rem", "color": rr_color,
+                            "fontFamily": "monospace", "fontWeight": "600"}),
+        ], style={"padding": "0 14px"}),
+    ], style={"display": "flex", "alignItems": "center",
+              "marginBottom": "10px"})
+
+    # ── Reasoning bullets ──────────────────────────────────────────
+    reasoning_items = [
+        html.Li(r, style={"marginBottom": "2px"}) for r in reasoning[:8]
+    ] or [html.Li("No signals firing", style={"color": "#888"})]
+
+    reasoning_block = html.Div([
+        html.Div("REASONING", style={"fontSize": "0.72rem", "color": "#888",
+                                      "letterSpacing": "0.08em",
+                                      "marginBottom": "4px"}),
+        html.Ul(reasoning_items,
+                style={"margin": "0", "paddingLeft": "18px",
+                       "fontSize": "0.80rem", "color": "#ccc"}),
+    ], style={"flex": 1, "minWidth": 0, "paddingRight": "16px"})
+
+    # ── Caveats bullets ─────────────────────────────────────────────
+    if caveats:
+        caveat_items = [
+            html.Li(c, style={"marginBottom": "2px", "color": "#ffb74d"})
+            for c in caveats[:6]
+        ]
+        caveat_block = html.Div([
+            html.Div("WATCH OUT", style={"fontSize": "0.72rem", "color": "#ffb74d",
+                                          "letterSpacing": "0.08em",
+                                          "marginBottom": "4px"}),
+            html.Ul(caveat_items,
+                    style={"margin": "0", "paddingLeft": "18px",
+                           "fontSize": "0.80rem"}),
+        ], style={"flex": 1, "minWidth": 0,
+                  "paddingLeft": "16px",
+                  "borderLeft": "1px solid rgba(255,255,255,0.08)"})
+    else:
+        caveat_block = html.Div([
+            html.Div("WATCH OUT", style={"fontSize": "0.72rem", "color": "#888",
+                                          "letterSpacing": "0.08em",
+                                          "marginBottom": "4px"}),
+            html.Div("No major caveats", style={"fontSize": "0.80rem",
+                                                  "color": "#666",
+                                                  "fontStyle": "italic"}),
+        ], style={"flex": 1, "minWidth": 0,
+                  "paddingLeft": "16px",
+                  "borderLeft": "1px solid rgba(255,255,255,0.08)"})
+
+    return html.Div([
+        header_row,
+        levels_row,
+        html.Div([reasoning_block, caveat_block],
+                 style={"display": "flex", "alignItems": "flex-start"}),
+    ])
+
+
 def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
-                          regime=None, vanna_vix=None, charm_clock=None):
+                          regime=None, vanna_vix=None, charm_clock=None,
+                          skew=None, term=None, iv_rank=None, pinning=None):
     """
     Build the header bar cells.
     session:     locked from prev close file (EM, ranges)
@@ -1407,6 +1997,10 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
     regime:      gamma regime classification
     vanna_vix:   vanna/VIX alignment signal
     charm_clock: charm decay clock
+    skew:        25d put IV − 25d call IV
+    term:        term structure (front/back IV ratio)
+    iv_rank:     IV rank and percentile from history
+    pinning:     pinning strength for 0DTE
     """
     if not session and not live:
         return "No metrics"
@@ -1478,14 +2072,20 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
                       color=regime_color,
                       sub=f"{bias} | {conviction}"),
 
-        # GEX Flip
-        _metric_cell("GEX Flip",
-                      f"${gex_flip:,.0f}" if gex_flip else "—",
-                      color="#ff9800",
-                      sub=flip_pos),
-
         # Vanna / VIX Signal
         _vanna_vix_cell(vanna_vix),
+
+        # Skew (25d put IV − 25d call IV)
+        _skew_cell(skew),
+
+        # Term structure (front vs ~30d IV)
+        _term_cell(term),
+
+        # IV Rank / Percentile
+        _iv_rank_cell(iv_rank),
+
+        # Pinning strength
+        _pin_cell(pinning),
 
         # Live ATM IV + change from prev close
         _metric_cell("ATM IV (live)", f"{live_iv * 100:.1f}%",
@@ -1524,14 +2124,6 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
         _metric_cell("P/C Ratio", f"{pc_ratio:.2f}",
                       color="#66bb6a" if pc_ratio < 1.0 else "#ef5350"),
 
-        # Previous day H/L
-        _metric_cell("Prev High", f"${prev_hi:,.1f}",
-                      color="#80cbc4" if prev_hi > 0 else "#555",
-                      sub=f"{(spot - prev_hi) / prev_hi * 100:+.2f}%" if prev_hi > 0 else ""),
-        _metric_cell("Prev Low", f"${prev_lo:,.1f}",
-                      color="#ef9a9a" if prev_lo > 0 else "#555",
-                      sub=f"{(spot - prev_lo) / prev_lo * 100:+.2f}%" if prev_lo > 0 else ""),
-
         # DTE
         _metric_cell("DTE", f"{dte}d", color="#888"),
 
@@ -1548,10 +2140,11 @@ def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
 
 def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
                  lines=None, compact=False, show_spot=True,
-                 history_dots=None):
+                 history_dots=None, y_dtick=None):
     """Horizontal bar chart: Y=strike, X=exposure.
     compact=True uses tighter margins and larger dtick for small panels.
     show_spot=False hides the spot price line.
+    y_dtick: override the auto Y-axis spacing (in strike units).
 
     history_dots: list of dicts [{strike_str: value, ...}, ...] from oldest→newest
         Up to 3 past snapshots shown as dots with fading opacity.
@@ -1708,7 +2301,7 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
             gridcolor="rgba(255,255,255,0.06)",
             zeroline=False,
             title_font=dict(size=10),
-            dtick=10 if compact else 5,
+            dtick=y_dtick if y_dtick is not None else (10 if compact else 5),
             tickfont=dict(size=9 if compact else 11),
             fixedrange=False,           # allow vertical zoom/pan
         ),
@@ -1723,12 +2316,22 @@ def _build_chart(df, x_col, y_col, title, spot, color_pos, color_neg,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_value_view(df, x_col, y_col, title, spot, prev_values,
-                      compact=False, open_price=0):
+                      compact=False, open_price=0, ultra_compact=False):
     """
     Heatmap-style table: each row is a strike, coloured by exposure value.
     Shows the value, change since last refresh, and change %.
+
+    ultra_compact=True shortens text AND limits to ~20 ATM strikes to fit
+    narrow panels like the Market Matrix.
     """
     df_sorted = df.sort_values(x_col, ascending=True).copy()
+
+    # In ultra_compact mode, keep only the 20 strikes closest to spot
+    # so the heatmap cells have enough vertical pixels to render
+    if ultra_compact and len(df_sorted) > 20:
+        df_sorted["_d"] = (df_sorted[x_col] - spot).abs()
+        df_sorted = df_sorted.nsmallest(20, "_d").sort_values(x_col, ascending=True)
+        df_sorted = df_sorted.drop(columns=["_d"])
 
     strikes = df_sorted[x_col].values
     values  = df_sorted[y_col].values
@@ -1759,9 +2362,13 @@ def _build_value_view(df, x_col, y_col, title, spot, prev_values,
             chg = v - prev_v
             chg_pct = (chg / abs(prev_v)) * 100
             sign = "+" if chg >= 0 else ""
-            cell_text.append(
-                f"${val_str}   {sign}{_fmt_value(chg)}  ({sign}{chg_pct:.1f}%)"
-            )
+            if ultra_compact:
+                # Just value and % — skip absolute change to save horizontal space
+                cell_text.append(f"${val_str}  {sign}{chg_pct:.1f}%")
+            else:
+                cell_text.append(
+                    f"${val_str}   {sign}{_fmt_value(chg)}  ({sign}{chg_pct:.1f}%)"
+                )
         else:
             cell_text.append(f"${val_str}")
 
@@ -1782,7 +2389,7 @@ def _build_value_view(df, x_col, y_col, title, spot, prev_values,
         text=text_grid,
         texttemplate="%{text}",
         textfont=dict(
-            size=10 if compact else 12,
+            size=8 if ultra_compact else (10 if compact else 12),
             family="monospace",
             color="#ffffff",
         ),

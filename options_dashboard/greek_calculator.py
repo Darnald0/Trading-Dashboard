@@ -216,6 +216,30 @@ def zomma(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
     return norm.pdf(d1_val) * (d1_val * d2_val - 1.0) / (S * sigma**2 * sqrtT)
 
 
+def vomma(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
+    """
+    Vomma  =  ∂vega/∂sigma  =  S·√T·N'(d1) · (d1·d2 / sigma)
+    Same for calls and puts.  Sensitivity of vega to IV changes —
+    tells you how much vega accelerates when volatility moves.
+    """
+    d1_val = _d1(S, K, T, sigma, r, q)
+    d2_val = _d2(S, K, T, sigma, r, q)
+    sqrtT  = np.sqrt(T)
+    return S * sqrtT * norm.pdf(d1_val) * (d1_val * d2_val / sigma)
+
+
+def speed(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
+    """
+    Speed  =  ∂gamma/∂S  =  -Γ / S · (d1 / (σ·√T) + 1)
+    Same for calls and puts.  Third derivative of price w.r.t. spot —
+    tells you how fast gamma itself is changing as spot moves.
+    """
+    d1_val = _d1(S, K, T, sigma, r, q)
+    sqrtT  = np.sqrt(T)
+    gam = norm.pdf(d1_val) / (S * sigma * sqrtT)
+    return -gam / S * (d1_val / (sigma * sqrtT) + 1.0)
+
+
 # ── exposure aggregation ─────────────────────────────────────────────────────
 
 def compute_exposure(chain_df, spot, greek_mode="oi"):
@@ -296,6 +320,20 @@ def compute_exposure(chain_df, spot, greek_mode="oi"):
     d_put  = delta_put(S, K, T, put_iv)   * put_w  * multiplier * (-1)
     dex_exp = d_call + d_put
 
+    # ── Vomma exposure (dealer short = negate both) ──────────────────
+    # Vomma = dVega/dSigma — sensitivity of vega to IV.
+    # Dealer is short vega on both sides, so both negate.
+    vom_call = vomma(S, K, T, call_iv) * call_w * multiplier * (-1)
+    vom_put  = vomma(S, K, T, put_iv)  * put_w  * multiplier * (-1)
+    vomma_exp = vom_call + vom_put
+
+    # ── Speed exposure (same +call/-put asymmetry as GEX) ────────────
+    # Speed = dGamma/dS — same delta-hedge stabilizing/destabilizing
+    # asymmetry as gamma itself.
+    sp_call = speed(S, K, T, call_iv) * call_w * gex_factor
+    sp_put  = speed(S, K, T, put_iv)  * put_w  * gex_factor * (-1)
+    speed_exp = sp_call + sp_put
+
     return pd.DataFrame({
         "strike":    K,
         "gamma_exp": gamma_exp,
@@ -303,6 +341,8 @@ def compute_exposure(chain_df, spot, greek_mode="oi"):
         "vanna_exp": vanna_exp,
         "zomma_exp": zomma_exp,
         "dex_exp":   dex_exp,
+        "vomma_exp": vomma_exp,
+        "speed_exp": speed_exp,
     })
 
 
@@ -600,6 +640,445 @@ def compute_live_metrics(chain_df, spot):
         "straddle_em_pct":  round(straddle_em_pct, 2),
         "straddle_em_high": round(straddle_em_high, 2),
         "straddle_em_low":  round(straddle_em_low, 2),
+    }
+
+
+# ── Skew (25-delta put IV − 25-delta call IV) ────────────────────────────────
+
+def compute_skew(chain_df, spot):
+    """
+    25-delta put IV minus 25-delta call IV.
+
+    Positive skew = market pays up for downside protection (bearish).
+    Rapidly rising skew often precedes drawdowns.
+
+    Returns dict with:
+        put_iv_25d:  IV at the 25-delta put strike
+        call_iv_25d: IV at the 25-delta call strike
+        skew:        put_iv_25d - call_iv_25d (in vol points)
+        skew_pct:    skew as % of ATM IV (normalized)
+    """
+    if chain_df is None or chain_df.empty:
+        return {"skew": 0, "skew_pct": 0, "put_iv_25d": 0, "call_iv_25d": 0}
+
+    df = chain_df.copy()
+    T = df["dte_years"].values[0] if len(df) > 0 else 1/252
+    T = max(T, 1e-6)
+    K = df["strike"].values.astype(float)
+
+    # ATM IV for normalization
+    atm_idx = int(np.argmin(np.abs(K - spot)))
+    atm_iv = (float(df.iloc[atm_idx]["call_iv"]) + float(df.iloc[atm_idx]["put_iv"])) / 2.0
+    if atm_iv <= 0:
+        atm_iv = 0.20
+
+    # Compute deltas for every strike using its own IV
+    call_ivs = df["call_iv"].values.astype(float)
+    put_ivs  = df["put_iv"].values.astype(float)
+    call_ivs = np.where((call_ivs <= 0) | np.isnan(call_ivs), atm_iv, call_ivs)
+    put_ivs  = np.where((put_ivs  <= 0) | np.isnan(put_ivs),  atm_iv, put_ivs)
+
+    c_deltas = norm.cdf(_d1(spot, K, T, call_ivs))
+    p_deltas = norm.cdf(_d1(spot, K, T, put_ivs)) - 1.0
+
+    # Find strikes closest to ±0.25 delta
+    call_idx = int(np.argmin(np.abs(c_deltas - 0.25)))
+    put_idx  = int(np.argmin(np.abs(p_deltas + 0.25)))
+
+    put_iv_25d  = float(put_ivs[put_idx])
+    call_iv_25d = float(call_ivs[call_idx])
+    skew = put_iv_25d - call_iv_25d
+    skew_pct = (skew / atm_iv * 100) if atm_iv > 0 else 0
+
+    return {
+        "put_iv_25d":  round(put_iv_25d, 4),
+        "call_iv_25d": round(call_iv_25d, 4),
+        "put_strike":  float(K[put_idx]),
+        "call_strike": float(K[call_idx]),
+        "skew":        round(skew, 4),
+        "skew_pct":    round(skew_pct, 2),
+    }
+
+
+# ── Pinning strength ────────────────────────────────────────────────────────
+
+def compute_pinning_strength(exp_df, chain_df, spot, dte_years=None):
+    """
+    Composite score of pin-to-strike magnetism near spot.
+
+    Method:
+    1. For each near-ATM strike, compute a score combining:
+       - Absolute gamma exposure (higher = stronger pull)
+       - Volume × OI density (higher = more interest)
+       - Distance from spot (closer = stronger pull, exponential decay)
+       - Time-to-expiry penalty (pinning strongest as 0DTE approaches)
+    2. Identify the dominant strike and its strength
+
+    Returns dict:
+        pin_strike:    the strike with highest pinning score
+        pin_strength:  score (0-100, where 100 = maximum pin pressure)
+        pin_distance:  |pin_strike - spot| in dollars
+        confidence:    LOW / MEDIUM / HIGH based on absolute score
+    """
+    if exp_df is None or exp_df.empty or chain_df is None or chain_df.empty:
+        return {"pin_strike": None, "pin_strength": 0,
+                "pin_distance": 0, "confidence": "N/A"}
+
+    # Merge exposure with raw chain to get OI+volume
+    exp = exp_df.copy()
+    exp["distance"] = (exp["strike"] - spot).abs()
+
+    # Proximity weight — exponential decay, stronger than charm clock
+    # (spot*0.005 = 0.5% — sharper because pinning is very local)
+    exp["prox_weight"] = np.exp(-exp["distance"] / (spot * 0.005))
+
+    # Join volume + OI from original chain
+    chain_slim = chain_df[["strike", "call_oi", "put_oi",
+                           "call_volume", "put_volume"]].copy()
+    exp = exp.merge(chain_slim, on="strike", how="left").fillna(0)
+
+    # Raw score per strike:
+    #   |gamma_exp| × prox_weight × (log(1 + volume) * log(1 + total_oi))
+    total_oi = exp["call_oi"] + exp["put_oi"]
+    total_vol = exp["call_volume"] + exp["put_volume"]
+    activity = np.log1p(total_vol) * np.log1p(total_oi)
+
+    exp["pin_score"] = exp["gamma_exp"].abs() * exp["prox_weight"] * activity
+
+    if exp["pin_score"].sum() == 0:
+        return {"pin_strike": None, "pin_strength": 0,
+                "pin_distance": 0, "confidence": "N/A"}
+
+    top_idx = exp["pin_score"].idxmax()
+    pin_strike = float(exp.loc[top_idx, "strike"])
+    top_score = float(exp.loc[top_idx, "pin_score"])
+
+    # Normalize score: compare top strike to average of other near-ATM strikes
+    # (within 1% of spot)
+    near = exp[exp["distance"] <= spot * 0.01]
+    if len(near) > 1:
+        avg_score = near["pin_score"].mean()
+        ratio = top_score / avg_score if avg_score > 0 else 1.0
+    else:
+        ratio = 1.0
+
+    # Time factor: pinning strongest in the last hour of 0DTE
+    if dte_years is not None and dte_years < 1/252:
+        # Intraday 0DTE — use DTE directly as a time factor
+        # 1.0 at market open (full day left), rising to ~3.0 in final hour
+        time_factor = 1.0 + 2.0 * (1.0 - dte_years * 252)
+    else:
+        # Non-0DTE pinning is much weaker
+        time_factor = 0.5
+
+    # Composite score 0-100
+    strength = min(ratio * time_factor * 15, 100)
+
+    if strength >= 70:
+        confidence = "HIGH"
+    elif strength >= 40:
+        confidence = "MEDIUM"
+    elif strength >= 20:
+        confidence = "LOW"
+    else:
+        confidence = "NONE"
+
+    return {
+        "pin_strike":   pin_strike,
+        "pin_strength": round(strength, 1),
+        "pin_distance": round(abs(pin_strike - spot), 2),
+        "confidence":   confidence,
+    }
+
+
+# ── Composite trade signal ──────────────────────────────────────────────────
+
+def compute_trade_signal(spot, regime, vanna_vix, charm_clock, skew, term,
+                          iv_rank, pinning, live_metrics, exp_df):
+    """
+    Combine all signals into a coherent trade setup.
+
+    Returns dict with:
+        direction:       "LONG" | "SHORT" | "NEUTRAL"
+        conviction:      "LOW" | "MEDIUM" | "HIGH"
+        setup:           short description of the setup
+        entry:           suggested entry price/zone
+        stop_loss:       invalidation level
+        take_profit_1:   primary target
+        take_profit_2:   secondary target
+        reasoning:       list of bullet points explaining each signal
+        risk_reward:     numeric R:R ratio
+        caveats:         list of warnings that could change the trade
+    """
+    if not regime or exp_df is None or exp_df.empty:
+        return _empty_signal("Insufficient data")
+
+    # ── Extract key levels ──────────────────────────────────────────
+    gex_flip  = regime.get("gex_flip")
+    call_wall = regime.get("call_wall")
+    put_wall  = regime.get("put_wall")
+    gamma_sign = regime.get("gamma", "NEUTRAL")
+    above_flip = regime.get("above_flip")
+    conviction_regime = regime.get("conviction", "LOW")
+
+    straddle_em_high = live_metrics.get("straddle_em_high", spot) if live_metrics else spot
+    straddle_em_low  = live_metrics.get("straddle_em_low", spot)  if live_metrics else spot
+
+    # ── Directional vote (weighted) ─────────────────────────────────
+    # Each signal votes +1 bull / -1 bear / 0 neutral, weighted by reliability
+    votes = []
+    reasoning = []
+
+    # 1. Gamma regime (heaviest weight — core framework)
+    if gamma_sign == "POSITIVE":
+        # Above flip → mean-reverting, drift up to call wall (slight bull)
+        # Below flip → mean-reverting down, flip acts as ceiling (bear)
+        if above_flip is True:
+            votes.append(("regime", +1, 3.0))
+            reasoning.append("Positive γ above flip — mean-reverting drift (mild bullish)")
+        elif above_flip is False:
+            votes.append(("regime", -1, 3.0))
+            reasoning.append("Positive γ below flip — resistance overhead (bearish)")
+        else:
+            votes.append(("regime", 0, 1.5))
+            reasoning.append("Positive γ regime — low volatility, range-bound")
+    elif gamma_sign == "NEGATIVE":
+        # Negative γ = trend-following
+        if above_flip is True:
+            votes.append(("regime", +1, 2.5))
+            reasoning.append("Negative γ above flip — breakout continuation likely (bullish)")
+        elif above_flip is False:
+            votes.append(("regime", -1, 3.5))
+            reasoning.append("Negative γ below flip — crash-like acceleration risk (bearish)")
+        else:
+            votes.append(("regime", 0, 1.0))
+            reasoning.append("Negative γ — volatile, no clear flip reference")
+    else:
+        votes.append(("regime", 0, 1.0))
+        reasoning.append("Neutral γ regime — no directional edge from positioning")
+
+    # 2. Vanna/VIX (strong confirmation signal)
+    if vanna_vix:
+        sig = vanna_vix.get("signal", "MIXED")
+        if sig == "BULLISH":
+            votes.append(("vanna_vix", +1, 2.0))
+            reasoning.append("Vanna/VIX BULLISH — dealer flows buying stock")
+        elif sig == "BEARISH":
+            votes.append(("vanna_vix", -1, 2.0))
+            reasoning.append("Vanna/VIX BEARISH — dealer flows selling stock")
+        else:
+            reasoning.append("Vanna/VIX MIXED — no vol-flow edge")
+
+    # 3. Charm Clock (time-of-day flow)
+    if charm_clock:
+        direction = charm_clock.get("direction", "NEUTRAL")
+        hours = charm_clock.get("hours_to_close", 0)
+        # Charm matters more as more time remains
+        weight = min(hours / 6.5, 1.0) * 1.5
+        if direction == "SUPPORTIVE":
+            votes.append(("charm", +1, weight))
+            reasoning.append(f"Charm SUPPORTIVE — decay pressure bullish ({hours:.1f}h left)")
+        elif direction == "PRESSURING":
+            votes.append(("charm", -1, weight))
+            reasoning.append(f"Charm PRESSURING — decay pressure bearish ({hours:.1f}h left)")
+
+    # 4. Net DEX (dealer hedge flow)
+    if "dex_exp" in exp_df.columns:
+        net_dex = float(exp_df["dex_exp"].sum())
+        # Scale by spot for cross-ticker comparison
+        dex_per_spot = net_dex / (spot if spot > 0 else 1)
+        if dex_per_spot > 50:
+            votes.append(("dex", +1, 1.0))
+            reasoning.append(f"Net DEX positive (+${net_dex/1e6:.0f}M) — dealer long hedge bias")
+        elif dex_per_spot < -50:
+            votes.append(("dex", -1, 1.0))
+            reasoning.append(f"Net DEX negative (-${abs(net_dex)/1e6:.0f}M) — dealer short hedge bias")
+
+    # 5. Skew (flow sentiment)
+    if skew:
+        skew_val = skew.get("skew", 0) * 100   # in vol points
+        if skew_val > 4:
+            # Rising put demand → bearish sentiment (but can be contrarian)
+            votes.append(("skew", -0.5, 0.8))
+            reasoning.append(f"Skew steep (+{skew_val:.1f} pts) — elevated downside hedging")
+        elif skew_val < -1:
+            votes.append(("skew", +0.5, 0.8))
+            reasoning.append(f"Skew inverted ({skew_val:.1f} pts) — unusual call demand (bullish)")
+
+    # 6. Term structure (regime stability)
+    if term:
+        state = term.get("state", "N/A")
+        if state == "BACKWARDATION":
+            votes.append(("term", -0.5, 0.8))
+            reasoning.append("Term BACKWARDATION — near-term stress priced in (bearish)")
+        elif state == "CONTANGO":
+            reasoning.append("Term CONTANGO — normal volatility term structure")
+
+    # ── Compute direction and conviction ────────────────────────────
+    score = sum(vote * weight for _, vote, weight in votes)
+    max_score = sum(weight for _, _, weight in votes)
+    normalized = score / max_score if max_score > 0 else 0   # -1 to +1
+
+    if normalized >= 0.40:
+        direction = "LONG"
+    elif normalized <= -0.40:
+        direction = "SHORT"
+    else:
+        direction = "NEUTRAL"
+
+    abs_norm = abs(normalized)
+    if abs_norm >= 0.65:
+        conviction = "HIGH"
+    elif abs_norm >= 0.40:
+        conviction = "MEDIUM"
+    elif abs_norm >= 0.20:
+        conviction = "LOW"
+    else:
+        conviction = "NONE"
+
+    # ── Build the setup ─────────────────────────────────────────────
+    setup = ""
+    entry = None
+    stop_loss = None
+    tp1 = None
+    tp2 = None
+    caveats = []
+
+    if direction == "LONG":
+        # Entry priority: pullback to support (put wall > flip > current)
+        if gamma_sign == "POSITIVE" and above_flip:
+            # Mean-reverting: buy dips to put wall / flip
+            if put_wall and put_wall < spot:
+                entry = put_wall
+                setup = f"Fade dip to put wall (${put_wall:,.1f}) in positive γ"
+            elif gex_flip and gex_flip < spot:
+                entry = gex_flip
+                setup = f"Fade dip to GEX flip (${gex_flip:,.1f})"
+            else:
+                entry = spot
+                setup = "Mean-reversion long at current level"
+        else:
+            # Breakout continuation in negative γ
+            if call_wall and call_wall > spot:
+                entry = call_wall
+                setup = f"Breakout above call wall (${call_wall:,.1f})"
+            else:
+                entry = spot
+                setup = "Momentum long at current level"
+
+        # Stop: below the key support
+        if put_wall and put_wall < spot:
+            stop_loss = put_wall * 0.997   # just below
+        elif gex_flip and gex_flip < spot:
+            stop_loss = gex_flip * 0.997
+        else:
+            stop_loss = min(straddle_em_low, spot * 0.995)
+
+        # Targets: EM high → next wall
+        tp1 = straddle_em_high
+        if call_wall and call_wall > spot and call_wall > tp1:
+            tp2 = call_wall
+        else:
+            tp2 = spot + (spot - stop_loss) * 3.0
+
+    elif direction == "SHORT":
+        # Entry priority: rally to resistance (call wall > flip > current)
+        if gamma_sign == "POSITIVE" and not above_flip:
+            if call_wall and call_wall > spot:
+                entry = call_wall
+                setup = f"Fade rally into call wall (${call_wall:,.1f}) below flip"
+            elif gex_flip and gex_flip > spot:
+                entry = gex_flip
+                setup = f"Fade rally into GEX flip (${gex_flip:,.1f})"
+            else:
+                entry = spot
+                setup = "Mean-reversion short at current level"
+        else:
+            # Breakdown in negative γ
+            if put_wall and put_wall < spot:
+                entry = put_wall
+                setup = f"Breakdown below put wall (${put_wall:,.1f})"
+            else:
+                entry = spot
+                setup = "Momentum short at current level"
+
+        if call_wall and call_wall > spot:
+            stop_loss = call_wall * 1.003
+        elif gex_flip and gex_flip > spot:
+            stop_loss = gex_flip * 1.003
+        else:
+            stop_loss = max(straddle_em_high, spot * 1.005)
+
+        tp1 = straddle_em_low
+        if put_wall and put_wall < spot and put_wall < tp1:
+            tp2 = put_wall
+        else:
+            tp2 = spot - (stop_loss - spot) * 3.0
+
+    else:
+        setup = "No clear setup — signals conflicting or weak"
+
+    # ── Risk/reward ─────────────────────────────────────────────────
+    if entry and stop_loss and tp1:
+        risk = abs(entry - stop_loss)
+        reward = abs(tp1 - entry)
+        risk_reward = reward / risk if risk > 0 else 0
+    else:
+        risk_reward = 0
+
+    # ── Caveats ─────────────────────────────────────────────────────
+    if iv_rank and iv_rank.get("iv_rank") is not None:
+        rank = iv_rank["iv_rank"]
+        if rank >= 75:
+            caveats.append(f"IV Rank {rank:.0f}/100 — premium is expensive, favor spreads")
+        elif rank <= 25:
+            caveats.append(f"IV Rank {rank:.0f}/100 — premium is cheap, favor long options")
+
+    if pinning and pinning.get("confidence") in ("HIGH", "MEDIUM"):
+        pin_strike = pinning.get("pin_strike")
+        if pin_strike:
+            caveats.append(
+                f"Strong pin @ ${pin_strike:,.0f} — expect magnet effect into close"
+            )
+
+    if term and term.get("state") == "BACKWARDATION":
+        caveats.append("Backwardation — watch for sudden vol regime shift")
+
+    if gamma_sign == "NEGATIVE":
+        caveats.append("Negative γ: moves accelerate, tighten stops")
+
+    if vanna_vix and vanna_vix.get("signal") == "MIXED":
+        caveats.append("Vanna/VIX mixed — conflict between direction and IV flow")
+
+    if direction != "NEUTRAL":
+        # Flip-level invalidation warning
+        if gex_flip:
+            if direction == "LONG" and spot > gex_flip:
+                caveats.append(f"Thesis breaks if spot closes below GEX flip (${gex_flip:,.1f})")
+            elif direction == "SHORT" and spot < gex_flip:
+                caveats.append(f"Thesis breaks if spot closes above GEX flip (${gex_flip:,.1f})")
+
+    return {
+        "direction":     direction,
+        "conviction":    conviction,
+        "setup":         setup,
+        "entry":         round(entry, 2) if entry else None,
+        "stop_loss":     round(stop_loss, 2) if stop_loss else None,
+        "take_profit_1": round(tp1, 2) if tp1 else None,
+        "take_profit_2": round(tp2, 2) if tp2 else None,
+        "risk_reward":   round(risk_reward, 2),
+        "reasoning":     reasoning,
+        "caveats":       caveats,
+        "score":         round(normalized, 2),
+    }
+
+
+def _empty_signal(msg):
+    return {
+        "direction": "NEUTRAL", "conviction": "NONE", "setup": msg,
+        "entry": None, "stop_loss": None, "take_profit_1": None,
+        "take_profit_2": None, "risk_reward": 0,
+        "reasoning": [], "caveats": [], "score": 0,
     }
 
 

@@ -74,10 +74,12 @@ def _fetch_json(url: str, timeout: int = 20) -> list:
 
 def _latest_report_date() -> str | None:
     """Get the most recent report_date from the Legacy Futures Only dataset."""
-    url = (f"{API_HOST}/{LEGACY_FUTURES_ID}.json"
-           f"?$select=report_date_as_yyyy_mm_dd"
-           f"&$order=report_date_as_yyyy_mm_dd DESC"
-           f"&$limit=1")
+    params = urllib.parse.urlencode({
+        "$select": "report_date_as_yyyy_mm_dd",
+        "$order":  "report_date_as_yyyy_mm_dd DESC",
+        "$limit":  1,
+    })
+    url = f"{API_HOST}/{LEGACY_FUTURES_ID}.json?{params}"
     rows = _fetch_json(url)
     if not rows:
         return None
@@ -86,9 +88,11 @@ def _latest_report_date() -> str | None:
 
 def _fetch_report_for_date(report_date: str) -> list:
     """Fetch all rows for a given report_date."""
-    url = (f"{API_HOST}/{LEGACY_FUTURES_ID}.json"
-           f"?report_date_as_yyyy_mm_dd={report_date}T00:00:00.000"
-           f"&$limit=5000")
+    params = urllib.parse.urlencode({
+        "report_date_as_yyyy_mm_dd": f"{report_date}T00:00:00.000",
+        "$limit": 5000,
+    })
+    url = f"{API_HOST}/{LEGACY_FUTURES_ID}.json?{params}"
     return _fetch_json(url)
 
 
@@ -99,9 +103,11 @@ def _fetch_prior_week(current_date: str) -> list:
     except ValueError:
         return []
     prior = (cur - dt.timedelta(days=7)).strftime("%Y-%m-%d")
-    url = (f"{API_HOST}/{LEGACY_FUTURES_ID}.json"
-           f"?report_date_as_yyyy_mm_dd={prior}T00:00:00.000"
-           f"&$limit=5000")
+    params = urllib.parse.urlencode({
+        "report_date_as_yyyy_mm_dd": f"{prior}T00:00:00.000",
+        "$limit": 5000,
+    })
+    url = f"{API_HOST}/{LEGACY_FUTURES_ID}.json?{params}"
     try:
         return _fetch_json(url)
     except Exception:

@@ -176,6 +176,70 @@ class IBDataFetcher:
             f"Expiry {SETTINGS.expiry} not found. Available: {expiries[:10]}..."
         )
 
+    def fetch_atm_iv(self, ticker: str, expiry: str, spot: float) -> float:
+        """
+        Lightweight ATM IV fetch — requests only the ATM call + put
+        for a given expiry (2 market data lines, cancelled immediately).
+        Used for term structure calculations.
+        """
+        from ib_insync import Option
+
+        chains = self._get_all_chains(ticker)
+        best_chain = None
+        max_strikes = 0
+        for c in chains:
+            if expiry in c.expirations and len(c.strikes) > max_strikes:
+                max_strikes = len(c.strikes)
+                best_chain = c
+
+        if best_chain is None:
+            return 0.0
+
+        # Pick the strike closest to spot
+        strikes = sorted(best_chain.strikes)
+        atm_strike = min(strikes, key=lambda s: abs(s - spot))
+
+        import io, contextlib
+        _devnull = io.StringIO()
+
+        call = Option(ticker, expiry, atm_strike, "C", best_chain.exchange,
+                      multiplier=best_chain.multiplier, currency="USD",
+                      tradingClass=best_chain.tradingClass)
+        put = Option(ticker, expiry, atm_strike, "P", best_chain.exchange,
+                     multiplier=best_chain.multiplier, currency="USD",
+                     tradingClass=best_chain.tradingClass)
+
+        with contextlib.redirect_stdout(_devnull), \
+             contextlib.redirect_stderr(_devnull):
+            self.ib.qualifyContracts(call, put)
+            self.ib.sleep(0.3)
+
+        if call.conId == 0 or put.conId == 0:
+            return 0.0
+
+        self.ib.reqMarketDataType(4)
+        t_c = self.ib.reqMktData(call, "100,101,104,106", False, False)
+        t_p = self.ib.reqMktData(put,  "100,101,104,106", False, False)
+        self.ib.sleep(5)
+
+        c_iv = _safe_float(t_c.impliedVolatility)
+        p_iv = _safe_float(t_p.impliedVolatility)
+
+        try:
+            self.ib.cancelMktData(t_c.contract)
+            self.ib.cancelMktData(t_p.contract)
+        except Exception:
+            pass
+
+        # Average of call and put IVs; fall back to whichever is non-zero
+        if c_iv > 0 and p_iv > 0:
+            return (c_iv + p_iv) / 2.0
+        elif c_iv > 0:
+            return c_iv
+        elif p_iv > 0:
+            return p_iv
+        return 0.0
+
     # ── full option chain ────────────────────────────────────────────────
 
     def fetch_chain(self, ticker: str, expiry: str, spot: float) -> pd.DataFrame:
@@ -269,38 +333,47 @@ class IBDataFetcher:
         if not valid:
             return pd.DataFrame()
 
-        # Stream market data (not snapshot — snapshot doesn't support OI/IV)
-        # Type 4 = frozen/delayed: works when market is closed
+        # Stream market data in BATCHES to stay under the 100-line market-data cap
+        # This is the fix for TWS "?" showing and API silently returning 0.
+        # We request a batch, wait, collect values, cancel, then move to next batch.
         self.ib.reqMarketDataType(4)
-        tickers_list = []
-        for con in valid:
-            t = self.ib.reqMktData(con, "100,101,104,106", False, False)
-            tickers_list.append(t)
+        BATCH_SIZE = 40         # Leave headroom for watchlist + matrix tickers
+        SETTLE_SEC = 6          # Time to wait for data to populate per batch
 
-        self.ib.sleep(10)   # extra time for frozen data
-
-        # Parse results
         data = {}
-        for t in tickers_list:
-            c = t.contract
-            key = (c.right, c.strike)
-            oi = _safe_float(t.callOpenInterest) if c.right == "C" \
-                else _safe_float(t.putOpenInterest)
-            data[key] = {
-                "oi":     oi,
-                "volume": _safe_float(t.volume),
-                "iv":     _safe_float(t.impliedVolatility),
-                "bid":    _safe_float(t.bid),
-                "ask":    _safe_float(t.ask),
-                "last":   _safe_float(t.last),
-            }
+        for batch_start in range(0, len(valid), BATCH_SIZE):
+            batch = valid[batch_start:batch_start + BATCH_SIZE]
 
-        # Cancel subscriptions
-        for t in tickers_list:
-            try:
-                self.ib.cancelMktData(t.contract)
-            except Exception:
-                pass
+            tickers_list = []
+            for con in batch:
+                t = self.ib.reqMktData(con, "100,101,104,106", False, False)
+                tickers_list.append(t)
+
+            self.ib.sleep(SETTLE_SEC)
+
+            # Parse this batch
+            for t in tickers_list:
+                c = t.contract
+                key = (c.right, c.strike)
+                oi = _safe_float(t.callOpenInterest) if c.right == "C" \
+                    else _safe_float(t.putOpenInterest)
+                data[key] = {
+                    "oi":     oi,
+                    "volume": _safe_float(t.volume),
+                    "iv":     _safe_float(t.impliedVolatility),
+                    "bid":    _safe_float(t.bid),
+                    "ask":    _safe_float(t.ask),
+                    "last":   _safe_float(t.last),
+                }
+
+            # Cancel this batch BEFORE starting the next — frees market data lines
+            for t in tickers_list:
+                try:
+                    self.ib.cancelMktData(t.contract)
+                except Exception:
+                    pass
+            # Small gap to let TWS actually process the cancellations
+            self.ib.sleep(0.5)
 
         # Build DataFrame with business-day DTE and solved IV
         from greek_calculator import (compute_time_to_expiry, quality_mid,
@@ -448,6 +521,17 @@ class MockDataFetcher:
                 key=lambda e: abs(dt.date(int(e[:4]), int(e[4:6]), int(e[6:])) - today),
             )
         return SETTINGS.expiry if SETTINGS.expiry in expiries else expiries[0]
+
+    def fetch_atm_iv(self, ticker: str, expiry: str, spot: float) -> float:
+        """Mock ATM IV — deterministic with slight variation by DTE."""
+        try:
+            exp_date = dt.date(int(expiry[:4]), int(expiry[4:6]), int(expiry[6:]))
+            dte = max((exp_date - dt.date.today()).days, 0)
+        except Exception:
+            dte = 0
+        # Mock a slight term structure: near-term IV lower than back-month
+        base_iv = 0.18
+        return base_iv + 0.001 * dte
 
     def fetch_chain(self, ticker: str, expiry: str, spot: float) -> pd.DataFrame:
         rng = np.random.default_rng(42)
@@ -625,6 +709,37 @@ class DataManager:
         if ticker != cached_ticker or vix_data["current"] == 0:
             vix_data = fetcher.get_vix()
 
+        # Term structure: ATM IV for a back-month expiry (~30 DTE)
+        # Done only once per ticker (per session) to save market data lines
+        term_data = self._cache.get("term_structure", {"back_iv": 0, "back_expiry": "", "back_dte": 0})
+        if ticker != cached_ticker or term_data.get("back_iv", 0) == 0:
+            # Pick an expiry ~30 calendar days out
+            today = dt.date.today()
+            target_dte = 30
+            best_exp = None
+            best_diff = 1000
+            for e in expiries:
+                try:
+                    e_date = dt.date(int(e[:4]), int(e[4:6]), int(e[6:]))
+                    diff = abs((e_date - today).days - target_dte)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_exp = e
+                except Exception:
+                    continue
+            if best_exp and best_exp != resolved:
+                try:
+                    back_iv = fetcher.fetch_atm_iv(ticker, best_exp, spot)
+                    back_date = dt.date(int(best_exp[:4]), int(best_exp[4:6]), int(best_exp[6:]))
+                    back_dte = (back_date - today).days
+                    term_data = {"back_iv": back_iv, "back_expiry": best_exp,
+                                 "back_dte": back_dte}
+                    if back_iv > 0:
+                        print(f"  Term: {best_exp} ({back_dte}d) ATM IV = {back_iv*100:.1f}%")
+                except Exception as exc:
+                    print(f"  Warning: term structure fetch failed: {exc}")
+                    term_data = {"back_iv": 0, "back_expiry": "", "back_dte": 0}
+
         # ── Lock session metrics on FIRST fetch per ticker ───────────
         # Uses previous close IV from file for daily EM,
         # and last Friday close IV for weekly EM.
@@ -742,6 +857,7 @@ class DataManager:
                 "chain":           chain,
                 "prev_day_hl":     prev_hl,
                 "vix":             vix_data,
+                "term_structure":  term_data,
                 "session_metrics": dict(self._session_metrics),
                 "flow_chain":      flow_chain,
                 "oi_flow_chain":   oi_flow_chain,
