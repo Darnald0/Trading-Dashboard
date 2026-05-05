@@ -3,15 +3,6 @@ make close to 0 sligly brighter on charm heatmap
 previous candle on charm heatmap doesn't appear ?
 charm heatmap is wrong
 filter to mm only option position ?
-Vanna/Charm sign convention: -call, -put dealer-short (was +call, -put) ??
-regime VS vanna/VIX ?
-
-
-to add
-Charm Decay Clock   Weighted charm pressure × hours to close
-Expected Move from straddle   Uses actual ATM straddle mid-price, not IV formula
-
-
 
 
 Regime — POSITIVE γ in green or NEGATIVE γ in red, with FADE | HIGH or TREND | LOW below
@@ -28,3 +19,48 @@ Bias (FADE vs TREND):
 Directly follows the gamma sign. Positive gamma = mean-reverting market = fade moves. Negative gamma = self-reinforcing market = follow the trend.
 Conviction (LOW / MEDIUM / HIGH):
 Based on the absolute magnitude of total GEX, with thresholds calibrated for SPX:
+
+
+
+Regime vs Vanna/VIX — which to trust:
+They measure fundamentally different things and operate on different timescales:
+Regime tells you the structural environment — is the market set up for mean reversion or trending? It's based on the total accumulated positioning (OI across all strikes). It changes slowly — maybe once or twice a week. Think of it as the weather forecast.
+Vanna/VIX tells you the current flow pressure — right now, are dealer hedging flows pushing price up or down? It changes with every VIX tick. Think of it as looking out the window.
+When they agree, high conviction: POSITIVE γ + FADE + BULLISH vanna/VIX = very strong mean-reversion setup, fade dips aggressively.
+When they disagree, it depends on your timeframe:
+
+Intraday scalping → follow Vanna/VIX. If VIX is spiking and vanna says BEARISH, that flow pressure is happening right now regardless of the structural regime. Get out of the way short-term.
+Swing / multi-day → follow Regime. A POSITIVE γ environment will reassert itself once the VIX spike settles. The Vanna/VIX disagreement is often temporary — a brief volatility shock within a stable gamma structure.
+The dangerous case → NEGATIVE γ + BEARISH vanna/VIX. Both say the same thing: dealers are amplifying downside moves AND current flows are pushing lower. This is when crashes accelerate. Respect this signal heavily.
+The tricky case → POSITIVE γ + BEARISH vanna/VIX. Structural support exists but current flows are pushing against it. Usually the positive gamma wins and price snaps back — but if VIX keeps rising and the signal persists for multiple hours, it can mean the regime is about to flip. Watch whether price approaches the GEX flip line — if it crosses, the regime changes and both signals will align bearish.
+
+In practice: use Regime for your directional bias and position sizing, use Vanna/VIX for timing entries and exits within that bias.
+
+
+SIGNAL
+Regime (weight 3.0–3.5):
+  Positive γ above flip     → +1 × 3.0   (mean-reverting up)
+  Positive γ below flip     → −1 × 3.0   (resistance overhead)
+  Negative γ above flip     → +1 × 2.5   (breakout continuation)
+  Negative γ below flip     → −1 × 3.5   (crash acceleration)
+  
+Vanna/VIX (weight 2.0):
+  BULLISH (+vanna, falling VIX)   → +1 × 2.0
+  BEARISH (−vanna, rising VIX)    → −1 × 2.0
+  MIXED                           → 0    (no vote)
+  
+Charm Clock (weight scales with time left):
+  SUPPORTIVE   → +1 × (hours_left / 6.5) × 1.5
+  PRESSURING   → −1 × (hours_left / 6.5) × 1.5
+  
+Net DEX (weight 1.0):
+  DEX / spot > +50     → +1 × 1.0
+  DEX / spot < −50     → −1 × 1.0
+  
+Skew (weight 0.8):
+  > +4 pts     → −0.5 × 0.8   (elevated put demand = bearish)
+  < −1 pts     → +0.5 × 0.8   (call skew = bullish)
+  
+Term structure (weight 0.8):
+  BACKWARDATION   → −0.5 × 0.8   (stressed)
+  CONTANGO/FLAT   → 0

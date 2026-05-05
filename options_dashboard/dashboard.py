@@ -20,6 +20,7 @@ from config import SETTINGS, SIDEBAR_WIDTH, ET
 import data_fetcher
 import matrix_data
 import cot_scraper
+import market_state
 import claude_analyst
 from greek_calculator import (compute_exposure, compute_live_metrics,
                              classify_regime, compute_vanna_vix_signal,
@@ -44,6 +45,7 @@ WIDGETS = {
     "greeks": ("Greeks Visualizer", "\U0001F4CA"),
     "matrix": ("Market Matrix", "\U0001F5FA"),
     "cot":    ("COT Board",     "\U0001F4CB"),
+    "market": ("Broad Market",  "\U0001F30E"),
 }
 
 def _build_nav_buttons(active_id="greeks"):
@@ -273,7 +275,7 @@ settings_sidebar = html.Div(
     style={
         "width": f"{SIDEBAR_WIDTH}px",
         "minWidth": f"{SIDEBAR_WIDTH}px",
-        "height": "100vh",
+        "height": "100%",
         "overflowY": "auto",
         "padding": "12px",
         "borderRight": "1px solid rgba(255,255,255,0.08)",
@@ -459,19 +461,26 @@ metrics_header = html.Div(
 greeks_widget = html.Div(
     id="widget-greeks",
     children=[
-        settings_sidebar,
+        # Header spans the full widget width (sidebar + charts)
+        metrics_header,
+        # Below header: sidebar on left, charts on right
         html.Div(
-            [metrics_header, charts_panel],
+            [settings_sidebar, charts_panel],
             style={
                 "flex": 1,
                 "display": "flex",
-                "flexDirection": "column",
-                "height": "100vh",
+                "minHeight": 0,
                 "overflow": "hidden",
             },
         ),
     ],
-    style={"display": "flex", "flex": 1, "height": "100vh", "overflow": "hidden"},
+    style={
+        "display": "flex",
+        "flexDirection": "column",
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+    },
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -592,17 +601,17 @@ matrix_widget = html.Div(
 # ══════════════════════════════════════════════════════════════════════════════
 
 COT_COLUMNS = [
-    {"name": "Symbol",                "id": "symbol"},
-    {"name": "Long Contracts",        "id": "long",           "type": "numeric", "format": {"specifier": ","}},
-    {"name": "Short Contracts",       "id": "short",          "type": "numeric", "format": {"specifier": ","}},
-    {"name": "Long Contracts Change", "id": "long_change",    "type": "numeric", "format": {"specifier": "+,"}},
-    {"name": "Short Contracts Change","id": "short_change",   "type": "numeric", "format": {"specifier": "+,"}},
-    {"name": "Long % Amount",         "id": "long_pct",       "type": "numeric", "format": {"specifier": ".2f"}},
-    {"name": "Short % Amount",        "id": "short_pct",      "type": "numeric", "format": {"specifier": ".2f"}},
-    {"name": "Net % Change",          "id": "net_pct_change", "type": "numeric", "format": {"specifier": "+.2f"}},
-    {"name": "Net Position",          "id": "net_position",   "type": "numeric", "format": {"specifier": "+,"}},
-    {"name": "Open Interest",         "id": "open_interest",  "type": "numeric", "format": {"specifier": ","}},
-    {"name": "Open Interest Change",  "id": "oi_change",      "type": "numeric", "format": {"specifier": "+,"}},
+    {"name": "Symbol",          "id": "symbol"},
+    {"name": "Long Contracts",  "id": "long",           "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Short Contracts", "id": "short",          "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Δ Long Contracts","id": "long_change",    "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Δ Short Contracts","id": "short_change",  "type": "numeric", "format": {"specifier": ","}},
+    {"name": "Long %",          "id": "long_pct_str"},
+    {"name": "Short %",         "id": "short_pct_str"},
+    {"name": "Net % Change",    "id": "net_pct_str"},
+    {"name": "Net Position",    "id": "net_position",   "type": "numeric", "format": {"specifier": ",.0f"}},
+    {"name": "Open Interest",   "id": "oi_display"},
+    {"name": "Δ Open Interest", "id": "oi_change",      "type": "numeric", "format": {"specifier": ","}},
 ]
 
 cot_widget = html.Div(
@@ -630,61 +639,78 @@ cot_widget = html.Div(
                         "height": "calc(100vh - 100px)",
                     },
                     style_cell={
-                        "backgroundColor": "#1e1e1e",
+                        "backgroundColor": "#0a0a0a",
                         "color": "#e0e0e0",
-                        "fontFamily": "monospace",
-                        "fontSize": "0.82rem",
-                        "padding": "8px 10px",
-                        "border": "1px solid rgba(255,255,255,0.05)",
-                        "textAlign": "right",
+                        "fontFamily": "Inter, system-ui, sans-serif",
+                        "fontSize": "0.85rem",
+                        "padding": "10px 14px",
+                        "border": "1px solid rgba(255,255,255,0.04)",
+                        "textAlign": "center",
                         "whiteSpace": "nowrap",
                     },
                     style_header={
-                        "backgroundColor": "#2a2a2a",
-                        "color": "#fff",
-                        "fontWeight": "600",
-                        "fontSize": "0.78rem",
-                        "borderBottom": "2px solid rgba(255,255,255,0.15)",
+                        "backgroundColor": "#000",
+                        "color": "#e0e0e0",
+                        "fontWeight": "700",
+                        "fontSize": "0.80rem",
+                        "borderBottom": "2px solid rgba(255,255,255,0.10)",
                         "textAlign": "center",
+                        "padding": "12px 10px",
+                        "lineHeight": "1.2",
                     },
                     style_cell_conditional=[
                         {"if": {"column_id": "symbol"},
-                         "textAlign": "left", "fontWeight": "600",
-                         "color": "#facc15", "minWidth": "140px"},
+                         "textAlign": "left",
+                         "fontWeight": "700",
+                         "color": "#fff",
+                         "minWidth": "100px",
+                         "backgroundColor": "#0a0a0a"},
                     ],
-                    style_data_conditional=[
-                        # Positive changes → green
-                        {"if": {"column_id": "long_change",
-                                "filter_query": "{long_change} > 0"},
-                         "color": "#66bb6a"},
-                        {"if": {"column_id": "long_change",
-                                "filter_query": "{long_change} < 0"},
-                         "color": "#ef5350"},
-                        {"if": {"column_id": "short_change",
-                                "filter_query": "{short_change} > 0"},
-                         "color": "#ef5350"},
-                        {"if": {"column_id": "short_change",
-                                "filter_query": "{short_change} < 0"},
-                         "color": "#66bb6a"},
-                        {"if": {"column_id": "net_pct_change",
-                                "filter_query": "{net_pct_change} > 0"},
-                         "color": "#66bb6a"},
-                        {"if": {"column_id": "net_pct_change",
-                                "filter_query": "{net_pct_change} < 0"},
-                         "color": "#ef5350"},
-                        {"if": {"column_id": "net_position",
-                                "filter_query": "{net_position} > 0"},
-                         "color": "#66bb6a"},
-                        {"if": {"column_id": "net_position",
-                                "filter_query": "{net_position} < 0"},
-                         "color": "#ef5350"},
-                        {"if": {"column_id": "oi_change",
-                                "filter_query": "{oi_change} > 0"},
-                         "color": "#66bb6a"},
-                        {"if": {"column_id": "oi_change",
-                                "filter_query": "{oi_change} < 0"},
-                         "color": "#ef5350"},
+                ),
+            ],
+            style={
+                "padding": "16px",
+                "width": "100%",
+                "height": "100vh",
+                "overflow": "hidden",
+            },
+        ),
+    ],
+    style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
+)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BROAD MARKET STATE WIDGET
+# ══════════════════════════════════════════════════════════════════════════════
+
+market_widget = html.Div(
+    id="widget-market",
+    children=[
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.H4("Broad Market State",
+                                style={"margin": 0, "color": "#fff"}),
+                        html.Div(id="market-meta",
+                                 style={"fontSize": "0.80rem", "color": "#aaa",
+                                        "marginTop": "2px"}),
                     ],
+                    style={"marginBottom": "16px"},
+                ),
+                html.Div(
+                    id="market-grid",
+                    children="Loading...",
+                    style={
+                        "display": "grid",
+                        "gridTemplateColumns":
+                            "repeat(auto-fill, minmax(220px, 1fr))",
+                        "gap": "12px",
+                        "alignContent": "start",
+                        "overflowY": "auto",
+                        "height": "calc(100vh - 90px)",
+                        "padding": "4px",
+                    },
                 ),
             ],
             style={
@@ -702,7 +728,7 @@ cot_widget = html.Div(
 
 widget_content = html.Div(
     id="widget-content",
-    children=[greeks_widget, matrix_widget, cot_widget],
+    children=[greeks_widget, matrix_widget, cot_widget, market_widget],
     style={"flex": 1, "display": "flex", "overflow": "hidden"},
 )
 
@@ -776,6 +802,7 @@ def toggle_nav(n, nav_data):
     Output("widget-greeks", "style"),
     Output("widget-matrix", "style"),
     Output("widget-cot", "style"),
+    Output("widget-market", "style"),
     Output("nav-buttons", "children"),
     Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
@@ -788,16 +815,38 @@ def switch_widget(n_clicks_list):
 
     active = triggered.get("index", "greeks") if isinstance(triggered, dict) else "greeks"
 
-    base = {"flex": 1, "height": "100vh", "overflow": "hidden"}
-
-    greeks_style = {**base, "display": "flex" if active == "greeks" else "none"}
-    matrix_style = {**base, "display": "flex" if active == "matrix" else "none"}
-    cot_style    = {**base, "display": "flex" if active == "cot"    else "none"}
+    # Greeks widget needs flexDirection: column (header on top, content below).
+    # Matrix, COT, and Market use the default row layout.
+    greeks_style = {
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+        "flexDirection": "column",
+        "display": "flex" if active == "greeks" else "none",
+    }
+    matrix_style = {
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+        "display": "flex" if active == "matrix" else "none",
+    }
+    cot_style = {
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+        "display": "flex" if active == "cot" else "none",
+    }
+    market_style = {
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+        "display": "flex" if active == "market" else "none",
+    }
 
     # Rebuild nav buttons with updated active highlight
     nav_buttons = _build_nav_buttons(active_id=active)
 
-    return greeks_style, matrix_style, cot_style, nav_buttons
+    return greeks_style, matrix_style, cot_style, market_style, nav_buttons
 
 
 # ── Market Matrix refresh slider ─────────────────────────────────────────────
@@ -1092,16 +1141,462 @@ def on_claude_analyze(n_clicks):
     ])
 
 
+# ── Broad Market State poll callback ─────────────────────────────────────────
+
+def _market_card(row):
+    """Render one ETF card with its bullishness score visualized as a gauge bar."""
+    ticker = row.get("ticker", "?")
+    name = row.get("name", "")
+    error = row.get("error")
+
+    if error:
+        return html.Div([
+            html.Div(ticker, style={"fontSize": "1.05rem", "fontWeight": "700",
+                                     "color": "#fff"}),
+            html.Div(name, style={"fontSize": "0.72rem", "color": "#888",
+                                   "marginBottom": "8px"}),
+            html.Div(f"Error: {error}",
+                     style={"fontSize": "0.72rem", "color": "#ef5350"}),
+        ], style={
+            "padding": "12px 14px",
+            "border": "1px solid rgba(255,255,255,0.06)",
+            "borderRadius": "6px",
+            "backgroundColor": "#0e0e0e",
+        })
+
+    spot = row.get("spot", 0)
+    pct = row.get("pct_change", 0)
+    flow = row.get("flow_ratio", 0)
+    score = row.get("score", 50)
+    label = row.get("label", "NEUTRAL")
+    sma20 = row.get("sma20", 0)
+    sma50 = row.get("sma50", 0)
+    sma200 = row.get("sma200", 0)
+    vol_ratio = row.get("vol_ratio", 0)
+    trend_score = row.get("trend_score", 50)
+    is_composite = row.get("is_composite", False)
+    constituents = row.get("constituents", [])
+
+    # Color gradient for the score
+    if score >= 75:
+        color = "#22c55e"   # strong green
+    elif score >= 60:
+        color = "#84cc16"   # green
+    elif score >= 45:
+        color = "#94a3b8"   # neutral grey
+    elif score >= 30:
+        color = "#f97316"   # orange
+    else:
+        color = "#ef4444"   # red
+
+    pct_color = "#66bb6a" if pct >= 0 else "#ef5350"
+    flow_color = "#66bb6a" if flow >= 0 else "#ef5350"
+
+    # MA stack indicator
+    above_20 = spot > sma20 if sma20 > 0 else False
+    above_50 = spot > sma50 if sma50 > 0 else False
+    above_200 = spot > sma200 if sma200 > 0 else False
+    def _ma_dot(above):
+        return html.Span(
+            "●",
+            style={"color": "#22c55e" if above else "#ef4444",
+                   "marginRight": "2px", "fontSize": "0.85rem"},
+        )
+
+    # Vol ratio color
+    if vol_ratio >= 1.3:
+        vol_color = "#facc15"   # high conviction
+    elif vol_ratio >= 0.8:
+        vol_color = "#bbb"
+    else:
+        vol_color = "#666"      # low conviction
+
+    return html.Div([
+        # Header row
+        html.Div([
+            html.Span(ticker, style={"fontSize": "1.10rem", "fontWeight": "700",
+                                      "color": "#fbbf24" if is_composite else "#fff",
+                                      "letterSpacing": "0.02em"}),
+            html.Span(
+                "COMPOSITE" if is_composite else f"${spot:,.2f}",
+                style={"marginLeft": "auto",
+                       "fontSize": "0.65rem" if is_composite else "0.85rem",
+                       "color": "#fbbf24" if is_composite else "#bbb",
+                       "fontFamily": "monospace",
+                       "letterSpacing": "0.10em" if is_composite else "0",
+                       "fontWeight": "700" if is_composite else "400",
+                       "padding": "2px 6px" if is_composite else "0",
+                       "border": "1px solid #fbbf24" if is_composite else "none",
+                       "borderRadius": "3px" if is_composite else "0"},
+            ),
+        ], style={"display": "flex", "alignItems": "center"}),
+
+        html.Div(name, style={"fontSize": "0.70rem", "color": "#888",
+                               "marginBottom": "10px",
+                               "textTransform": "uppercase",
+                               "letterSpacing": "0.06em"}),
+
+        # Score gauge
+        html.Div([
+            html.Div(
+                style={
+                    "position": "absolute",
+                    "left": "0", "top": "0", "bottom": "0",
+                    "width": f"{score:.0f}%",
+                    "backgroundColor": color,
+                    "transition": "width 0.5s ease",
+                    "borderRadius": "4px",
+                },
+            ),
+            # Center marker (50 = neutral)
+            html.Div(
+                style={
+                    "position": "absolute",
+                    "left": "50%", "top": "0", "bottom": "0",
+                    "width": "1px",
+                    "backgroundColor": "rgba(255,255,255,0.30)",
+                },
+            ),
+        ], style={
+            "position": "relative",
+            "height": "10px",
+            "backgroundColor": "rgba(255,255,255,0.06)",
+            "borderRadius": "4px",
+            "overflow": "hidden",
+            "marginBottom": "8px",
+        }),
+
+        # Score / label row
+        html.Div([
+            html.Span(f"{score:.0f}",
+                      style={"fontSize": "1.40rem", "fontWeight": "700",
+                             "color": color, "fontFamily": "monospace"}),
+            html.Span("/100", style={"fontSize": "0.72rem", "color": "#666",
+                                       "marginLeft": "3px",
+                                       "fontFamily": "monospace"}),
+            html.Span(label,
+                      style={"marginLeft": "auto",
+                             "fontSize": "0.70rem", "fontWeight": "700",
+                             "color": color, "letterSpacing": "0.05em"}),
+        ], style={"display": "flex", "alignItems": "baseline",
+                  "marginBottom": "8px"}),
+
+        # Stats row 1: Day change / Flow / MA stack
+        html.Div([
+            html.Div([
+                html.Div("CHG",
+                         style={"fontSize": "0.62rem", "color": "#888",
+                                "letterSpacing": "0.08em"}),
+                html.Div(f"{pct:+.2f}%",
+                         style={"fontSize": "0.85rem",
+                                "color": pct_color,
+                                "fontFamily": "monospace",
+                                "fontWeight": "600"}),
+            ], style={"flex": 1}),
+            html.Div([
+                html.Div("FLOW",
+                         style={"fontSize": "0.62rem", "color": "#888",
+                                "letterSpacing": "0.08em"}),
+                html.Div(f"{flow:+.2f}",
+                         style={"fontSize": "0.85rem",
+                                "color": flow_color,
+                                "fontFamily": "monospace",
+                                "fontWeight": "600"}),
+            ], style={"flex": 1, "borderLeft": "1px solid rgba(255,255,255,0.06)",
+                       "paddingLeft": "10px"}),
+            html.Div([
+                html.Div("MA 20/50/200",
+                         style={"fontSize": "0.62rem", "color": "#888",
+                                "letterSpacing": "0.06em"}),
+                html.Div([
+                    _ma_dot(above_20),
+                    _ma_dot(above_50),
+                    _ma_dot(above_200),
+                ], style={"lineHeight": "1.0", "marginTop": "2px"}),
+            ], style={"flex": 1.2,
+                       "borderLeft": "1px solid rgba(255,255,255,0.06)",
+                       "paddingLeft": "10px"}),
+        ], style={"display": "flex", "marginBottom": "8px"}),
+
+        # Stats row 2: Volume ratio / Trend score
+        html.Div([
+            html.Div([
+                html.Div("VOL vs 20D",
+                         style={"fontSize": "0.62rem", "color": "#888",
+                                "letterSpacing": "0.08em"}),
+                html.Div(f"{vol_ratio:.2f}x",
+                         style={"fontSize": "0.85rem",
+                                "color": vol_color,
+                                "fontFamily": "monospace",
+                                "fontWeight": "600"}),
+            ], style={"flex": 1}),
+            html.Div([
+                html.Div("TREND",
+                         style={"fontSize": "0.62rem", "color": "#888",
+                                "letterSpacing": "0.08em"}),
+                html.Div(f"{trend_score:.0f}",
+                         style={"fontSize": "0.85rem",
+                                "color": ("#66bb6a" if trend_score >= 60
+                                          else "#ef5350" if trend_score < 40
+                                          else "#bbb"),
+                                "fontFamily": "monospace",
+                                "fontWeight": "600"}),
+            ], style={"flex": 1, "borderLeft": "1px solid rgba(255,255,255,0.06)",
+                       "paddingLeft": "10px"}),
+        ], style={"display": "flex"}),
+
+        # Constituent strip for composites
+        html.Div(
+            f"Constituents: {', '.join(constituents)}" if (is_composite and constituents) else "",
+            style={
+                "marginTop": "10px",
+                "paddingTop": "8px",
+                "borderTop": "1px solid rgba(251,191,36,0.15)",
+                "fontSize": "0.62rem",
+                "color": "#888",
+                "letterSpacing": "0.04em",
+                "display": "block" if (is_composite and constituents) else "none",
+            },
+        ),
+
+    ], style={
+        "padding": "12px 14px",
+        "border": ("1px solid rgba(251,191,36,0.40)" if is_composite
+                   else "1px solid rgba(255,255,255,0.06)"),
+        "borderRadius": "6px",
+        "backgroundColor": ("#1a1408" if is_composite else "#0e0e0e"),
+    })
+
+
+@app.callback(
+    Output("market-grid", "children"),
+    Output("market-meta", "children"),
+    Input("interval-poll", "n_intervals"),
+)
+def poll_market_state(n):
+    if not market_state.market_state_manager:
+        return "Market state manager not initialized", ""
+
+    cache = market_state.market_state_manager.get_cache()
+    rows = cache.get("rows", [])
+    error = cache.get("error")
+    fetched_at = cache.get("fetched_at", 0)
+
+    if not rows:
+        return error or "Loading...", ""
+
+    # Compute aggregate market state — average score
+    valid = [r for r in rows if not r.get("error")]
+    if valid:
+        avg_score = sum(r["score"] for r in valid) / len(valid)
+        bull_count = sum(1 for r in valid if r["score"] >= 60)
+        bear_count = sum(1 for r in valid if r["score"] < 40)
+    else:
+        avg_score = 50
+        bull_count = bear_count = 0
+
+    if fetched_at:
+        ts = dt.datetime.fromtimestamp(fetched_at, tz=ET).strftime("%H:%M:%S ET")
+    else:
+        ts = "—"
+
+    meta_text = (
+        f"Composite: {avg_score:.0f}/100  |  "
+        f"Bullish: {bull_count}/{len(valid)}  |  "
+        f"Bearish: {bear_count}/{len(valid)}  |  "
+        f"Last fetch: {ts}"
+    )
+
+    cards = [_market_card(r) for r in rows]
+
+    return cards, meta_text
+
+
 # ── COT Board poll callback ──────────────────────────────────────────────────
+
+def _format_oi_short(n):
+    """Format OI like '1986K' (matches reference design)."""
+    if n is None:
+        return "—"
+    n = int(n)
+    if abs(n) >= 1000:
+        return f"{n // 1000:,}K"
+    return f"{n:,}"
+
+
+def _heat_color(value, max_abs, positive_is_bullish=True):
+    """
+    Return a background color for a cell based on its value's magnitude.
+    Blue for bullish, red for bearish, intensity = |value| / max_abs.
+    Returns "" for ~zero values (transparent).
+    """
+    if max_abs <= 0 or value is None or abs(value) < 1e-9:
+        return "transparent"
+    intensity = min(abs(value) / max_abs, 1.0)
+    # Use squared-falloff curve so only the biggest values look saturated
+    alpha = 0.15 + 0.55 * (intensity ** 0.6)
+    is_bullish = (value > 0) if positive_is_bullish else (value < 0)
+    if is_bullish:
+        return f"rgba(64, 110, 220, {alpha:.2f})"   # blue
+    else:
+        return f"rgba(220, 60, 80, {alpha:.2f})"     # red
+
+
+def _build_cot_row_styles(rows):
+    """
+    Build per-cell background color rules for each row.
+    Returns a list of style_data_conditional entries.
+
+    Heatmap rules:
+      - Long / Short / OI: pure magnitude (blue for high, no negatives)
+      - Δ Long / Δ OI:     positive=blue, negative=red
+      - Δ Short:            positive=red (bearish), negative=blue (bullish)
+      - Long %:             >50%=blue, <50%=red (gradient)
+      - Short %:            <50%=blue, >50%=red (gradient)
+      - Net % Change:       positive=blue, negative=red
+      - Net Position:       positive=blue, negative=red
+    """
+    if not rows:
+        return []
+
+    # Pre-compute max absolute values per column for normalization
+    cols_signed = ["long_change", "short_change", "net_pct_change",
+                   "net_position", "oi_change"]
+    cols_pos    = ["long", "short", "open_interest"]
+
+    max_abs = {}
+    for col in cols_signed + cols_pos:
+        vals = [abs(r.get(col, 0) or 0) for r in rows]
+        max_abs[col] = max(vals) if vals else 1
+
+    styles = []
+
+    # Hover row highlight
+    styles.append({
+        "if": {"state": "active"},
+        "backgroundColor": "rgba(255,255,255,0.04)",
+        "border": "1px solid rgba(255,255,255,0.20)",
+    })
+
+    # Bold for the Net Position column
+    styles.append({
+        "if": {"column_id": "net_position"},
+        "fontWeight": "700", "fontSize": "0.92rem",
+    })
+    styles.append({
+        "if": {"column_id": "symbol"},
+        "fontWeight": "700",
+    })
+
+    # Build per-row, per-column color
+    for i, row in enumerate(rows):
+        sym = row["symbol"]
+        # filter_query uses {symbol} = "DOW" syntax
+        fq = f'{{symbol}} = "{sym}"'
+
+        # Long / Short / Open Interest — pure magnitude (blue, no red)
+        for col in ("long", "short", "open_interest"):
+            display_col = "oi_display" if col == "open_interest" else col
+            v = row.get(col, 0)
+            mx = max_abs[col] or 1
+            intensity = min(abs(v) / mx, 1.0)
+            alpha = 0.15 + 0.50 * (intensity ** 0.6)
+            styles.append({
+                "if": {"filter_query": fq, "column_id": display_col},
+                "backgroundColor": f"rgba(64, 110, 220, {alpha:.2f})",
+                "color": "#e8eef9",
+            })
+
+        # Δ Long Contracts: positive=blue, negative=red, bold negatives
+        v = row.get("long_change", 0)
+        bg = _heat_color(v, max_abs["long_change"] or 1)
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "long_change"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if v < 0 else "#d8e2ff",
+            "fontWeight": "700" if v < 0 else "400",
+        })
+
+        # Δ Short Contracts: inverted — positive=red (bearish), negative=blue
+        v = row.get("short_change", 0)
+        bg = _heat_color(v, max_abs["short_change"] or 1, positive_is_bullish=False)
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "short_change"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if v > 0 else "#d8e2ff",
+            "fontWeight": "700" if v > 0 else "400",
+        })
+
+        # Long % — gradient blue (always shown as bullish leaning when high)
+        long_pct = row.get("long_pct", 0)
+        # Center on 50%, scale ±50 → ±1
+        normalized = (long_pct - 50) / 50.0
+        alpha = 0.15 + 0.45 * abs(normalized)
+        col_blue = normalized >= 0
+        bg = (f"rgba(64, 110, 220, {alpha:.2f})" if col_blue
+              else f"rgba(220, 60, 80, {alpha:.2f})")
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "long_pct_str"},
+            "backgroundColor": bg,
+            "color": "#d8e2ff" if col_blue else "#ffd1d1",
+            "fontWeight": "700" if not col_blue else "400",
+        })
+
+        # Short % — opposite: high short % = bearish/red
+        short_pct = row.get("short_pct", 0)
+        normalized = (short_pct - 50) / 50.0
+        alpha = 0.15 + 0.45 * abs(normalized)
+        col_red = normalized >= 0
+        bg = (f"rgba(220, 60, 80, {alpha:.2f})" if col_red
+              else f"rgba(64, 110, 220, {alpha:.2f})")
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "short_pct_str"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if col_red else "#d8e2ff",
+            "fontWeight": "700" if col_red else "400",
+        })
+
+        # Net % Change
+        v = row.get("net_pct_change", 0)
+        bg = _heat_color(v, max_abs["net_pct_change"] or 1)
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "net_pct_str"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if v < 0 else "#d8e2ff",
+            "fontWeight": "700" if v < 0 else "400",
+        })
+
+        # Net Position — heaviest emphasis
+        v = row.get("net_position", 0)
+        bg = _heat_color(v, max_abs["net_position"] or 1)
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "net_position"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if v < 0 else "#d8e2ff",
+        })
+
+        # Δ Open Interest: positive=blue, negative=red
+        v = row.get("oi_change", 0)
+        bg = _heat_color(v, max_abs["oi_change"] or 1)
+        styles.append({
+            "if": {"filter_query": fq, "column_id": "oi_change"},
+            "backgroundColor": bg,
+            "color": "#ffd1d1" if v < 0 else "#d8e2ff",
+            "fontWeight": "700" if v < 0 else "400",
+        })
+
+    return styles
+
 
 @app.callback(
     Output("cot-table", "data"),
+    Output("cot-table", "style_data_conditional"),
     Output("cot-meta", "children"),
     Input("interval-poll", "n_intervals"),
 )
 def poll_cot(n):
     if not cot_scraper.cot_manager:
-        return [], "COT manager not initialized"
+        return [], [], "COT manager not initialized"
 
     cache = cot_scraper.cot_manager.get_cache()
     error = cache.get("error")
@@ -1110,7 +1605,20 @@ def poll_cot(n):
     fetched_at = cache.get("fetched_at", 0)
 
     if error and not rows:
-        return [], f"Error: {error}"
+        return [], [], f"Error: {error}"
+
+    # Add display-formatted fields for the styled columns
+    formatted = []
+    for r in rows:
+        fr = dict(r)
+        fr["long_pct_str"]  = f"{r.get('long_pct', 0):.2f}%"
+        fr["short_pct_str"] = f"{r.get('short_pct', 0):.2f}%"
+        npct = r.get("net_pct_change", 0)
+        fr["net_pct_str"]   = f"{npct:+.2f}%"
+        fr["oi_display"]    = _format_oi_short(r.get("open_interest", 0))
+        formatted.append(fr)
+
+    styles = _build_cot_row_styles(rows)
 
     if fetched_at:
         fetched_str = dt.datetime.fromtimestamp(fetched_at, tz=ET).strftime("%Y-%m-%d %H:%M:%S ET")
@@ -1121,7 +1629,7 @@ def poll_cot(n):
             f"Symbols: {len(rows)}  |  "
             f"Last fetch: {fetched_str}")
 
-    return rows, meta
+    return formatted, styles, meta
 
 
 # ── Greeks Visualizer callbacks ──────────────────────────────────────────────
@@ -2749,4 +3257,5 @@ if __name__ == "__main__":
     data_fetcher.init_data_manager(use_mock=True)
     matrix_data.init_matrix_manager(use_mock=True)
     cot_scraper.init_cot_manager()
+    market_state.init_market_state_manager(use_mock=True)
     app.run(debug=True, host="0.0.0.0", port=8050)

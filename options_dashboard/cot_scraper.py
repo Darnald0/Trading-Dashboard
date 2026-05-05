@@ -29,38 +29,48 @@ LEGACY_FUTURES_ID = "6dca-aqww"
 
 # Symbols we care about — mapped from CFTC contract names to display symbols
 # The CFTC uses long contract names; this maps them to the short tickers users know.
-TRACKED_SYMBOLS = {
+# Each entry: display_symbol -> tuple of required keyword fragments.
+# A CFTC contract name must contain ALL fragments (case-insensitive)
+# to match. This is more robust than exact-string matching because
+# the CFTC sometimes uses slightly different names across report types.
+# Order matters for display.
+TRACKED_SYMBOLS = [
     # Equity indices
-    "E-MINI S&P 500 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE": "ES (S&P 500)",
-    "NASDAQ-100 STOCK INDEX (MINI) - CHICAGO MERCANTILE EXCHANGE": "NQ (Nasdaq)",
-    "DJIA x $5 - CHICAGO BOARD OF TRADE": "YM (Dow)",
-    "E-MINI RUSSELL 2000 INDEX - CHICAGO MERCANTILE EXCHANGE": "RTY (Russell)",
-    "VIX FUTURES - CBOE FUTURES EXCHANGE": "VX (VIX)",
+    ("SPX",      ["E-MINI", "S&P 500"]),
+    ("NASDAQ",   ["NASDAQ", "MINI"]),
+    ("DOW",      ["DJIA"]),
+    ("RUSSELL",  ["RUSSELL", "E-MINI"]),
+    ("VIX",      ["VIX FUTURES"]),
     # Currencies
-    "EURO FX - CHICAGO MERCANTILE EXCHANGE": "6E (Euro)",
-    "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE": "6J (Yen)",
-    "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE": "6B (Pound)",
-    "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE": "6C (CAD)",
-    "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE": "6A (AUD)",
-    "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE": "6S (CHF)",
+    ("EUR",      ["EURO FX"]),
+    ("JPY",      ["JAPANESE YEN"]),
+    ("GBP",      ["BRITISH POUND"]),
+    ("CAD",      ["CANADIAN DOLLAR"]),
+    ("AUD",      ["AUSTRALIAN DOLLAR"]),
+    ("CHF",      ["SWISS FRANC"]),
+    ("NZD",      ["NEW ZEALAND DOLLAR"]),
+    # Crypto
+    ("BTC",      ["BITCOIN"]),
     # Metals
-    "GOLD - COMMODITY EXCHANGE INC.": "GC (Gold)",
-    "SILVER - COMMODITY EXCHANGE INC.": "SI (Silver)",
-    "COPPER- #1 - COMMODITY EXCHANGE INC.": "HG (Copper)",
-    "PLATINUM - NEW YORK MERCANTILE EXCHANGE": "PL (Platinum)",
+    ("Gold",     ["GOLD"]),
+    ("Silver",   ["SILVER"]),
+    ("Copper",   ["COPPER"]),
+    ("Platinum", ["PLATINUM"]),
     # Energy
-    "CRUDE OIL, LIGHT SWEET-WTI - NEW YORK MERCANTILE EXCHANGE": "CL (WTI)",
-    "NAT GAS NYME - NEW YORK MERCANTILE EXCHANGE": "NG (NatGas)",
+    ("USOil",    ["CRUDE OIL", "WTI"]),
+    ("NatGas",   ["NAT GAS", "NYME"]),
     # Rates
-    "UST BOND - CHICAGO BOARD OF TRADE": "ZB (30Y Bond)",
-    "UST 10Y NOTE - CHICAGO BOARD OF TRADE": "ZN (10Y Note)",
-    "UST 5Y NOTE - CHICAGO BOARD OF TRADE": "ZF (5Y Note)",
-    "UST 2Y NOTE - CHICAGO BOARD OF TRADE": "ZT (2Y Note)",
-    # Ags
-    "CORN - CHICAGO BOARD OF TRADE": "ZC (Corn)",
-    "SOYBEANS - CHICAGO BOARD OF TRADE": "ZS (Soybeans)",
-    "WHEAT-SRW - CHICAGO BOARD OF TRADE": "ZW (Wheat)",
-}
+    ("US30Y",    ["UST BOND"]),
+    ("US10Y",    ["UST 10Y NOTE"]),
+]
+
+
+def _matches(name: str, keywords: list) -> bool:
+    """Returns True if `name` contains ALL keywords (case-insensitive)."""
+    if not name:
+        return False
+    upper = name.upper()
+    return all(kw.upper() in upper for kw in keywords)
 
 
 # ── Low-level API fetch ──────────────────────────────────────────────────────
@@ -216,14 +226,22 @@ def fetch_cot_data() -> dict:
 
         # Build a row per tracked symbol (preserving insertion order)
         built_rows = []
-        for contract_name, symbol in TRACKED_SYMBOLS.items():
+        unmatched = []
+        for symbol, keywords in TRACKED_SYMBOLS:
+            # Find first row matching all keywords
             cur = next((r for r in cur_rows
-                        if r.get("market_and_exchange_names", "") == contract_name),
+                        if _matches(r.get("market_and_exchange_names", ""), keywords)),
                        None)
             if cur is None:
+                unmatched.append(symbol)
                 continue
-            prior = prior_by_name.get(contract_name)
+            matched_name = cur.get("market_and_exchange_names", "")
+            # Find prior row by exact name match (we know the exact name now)
+            prior = prior_by_name.get(matched_name)
             built_rows.append(_build_row(cur, prior, symbol))
+
+        if unmatched:
+            print(f"  [COT] Could not find: {', '.join(unmatched)}")
 
         return {
             "report_date": report_date,

@@ -18,6 +18,7 @@ asyncio.set_event_loop(asyncio.new_event_loop())
 import data_fetcher
 import matrix_data
 import cot_scraper
+import market_state
 from dashboard import app
 
 
@@ -42,6 +43,7 @@ def main():
     data_fetcher.init_data_manager(use_mock=use_mock)
     matrix_data.init_matrix_manager(use_mock=use_mock)
     cot_scraper.init_cot_manager()
+    market_state.init_market_state_manager(use_mock=use_mock)
 
     print(f"\n  Dashboard starting at  http://localhost:{args.port}\n")
     app.run(debug=args.debug, host="0.0.0.0", port=args.port)
