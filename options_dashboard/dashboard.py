@@ -21,10 +21,11 @@ import data_fetcher
 import matrix_data
 import cot_scraper
 import market_state
-import claude_analyst
+import heatmap_data
 from greek_calculator import (compute_exposure, compute_live_metrics,
                              classify_regime, compute_vanna_vix_signal,
-                             compute_charm_clock, compute_trade_signal)
+                             compute_charm_clock, compute_trade_signal,
+                             compute_profile_analysis)
 
 app = dash.Dash(
     __name__,
@@ -32,6 +33,189 @@ app = dash.Dash(
     title="Options Greek Dashboard",
     suppress_callback_exceptions=True,
 )
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GLOBAL THEME  (navy + accent colors, slightly rounded cards)
+# ══════════════════════════════════════════════════════════════════════════════
+
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+<head>
+    {%metas%}
+    <title>{%title%}</title>
+    {%favicon%}
+    {%css%}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        /* base navy palette */
+        --bg-main:        #181c33;
+        --bg-card:        #222647;
+        --bg-card-hover:  #2a2f55;
+        --bg-deep:        #14172a;
+        --bg-overlay:     rgba(34, 38, 71, 0.7);
+
+        /* text */
+        --text-primary:   #ffffff;
+        --text-secondary: #cbd5e1;
+        --text-muted:     #7986b4;
+        --text-faint:     #4a527a;
+
+        /* accents */
+        --accent-blue:    #5b8dee;
+        --accent-pink:    #ec4899;
+        --accent-teal:    #14b8a6;
+        --accent-orange:  #f97316;
+        --accent-yellow:  #fbbf24;
+        --accent-purple:  #a78bfa;
+
+        /* directional */
+        --bull:           #22c55e;
+        --bull-soft:      #16a34a;
+        --bear:           #ef4444;
+        --bear-soft:      #dc2626;
+
+        /* dividers / borders */
+        --border-subtle:  rgba(255, 255, 255, 0.05);
+        --border-medium:  rgba(255, 255, 255, 0.10);
+        --border-accent:  rgba(91, 141, 238, 0.30);
+      }
+
+      html, body {
+        background-color: var(--bg-main) !important;
+        color: var(--text-secondary) !important;
+        font-family: "Inter", system-ui, -apple-system, sans-serif !important;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Override Darkly's defaults */
+      .bg-dark, .navbar-dark, body.bg-dark {
+        background-color: var(--bg-main) !important;
+      }
+
+      /* Headings */
+      h1, h2, h3, h4, h5, h6 {
+        color: var(--text-primary) !important;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      /* Generic card surface */
+      .form-control, .form-select {
+        background-color: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        color: var(--text-primary) !important;
+        border-radius: 8px !important;
+      }
+      .form-control:focus, .form-select:focus {
+        border-color: var(--accent-blue) !important;
+        box-shadow: 0 0 0 2px rgba(91, 141, 238, 0.15) !important;
+      }
+
+      /* Bootstrap dropdown text */
+      .Select-control, .Select-menu-outer {
+        background-color: var(--bg-card) !important;
+        border-color: var(--border-subtle) !important;
+        border-radius: 8px !important;
+      }
+      .Select-value-label, .Select-input > input {
+        color: var(--text-primary) !important;
+      }
+      .Select-menu-outer .Select-option {
+        background-color: var(--bg-card) !important;
+        color: var(--text-secondary) !important;
+      }
+      .Select-menu-outer .Select-option:hover,
+      .Select-menu-outer .Select-option.is-focused {
+        background-color: var(--bg-card-hover) !important;
+        color: var(--text-primary) !important;
+      }
+
+      /* Radio + checkbox accent */
+      .form-check-input:checked {
+        background-color: var(--accent-blue) !important;
+        border-color: var(--accent-blue) !important;
+      }
+      .form-check-input {
+        background-color: var(--bg-deep) !important;
+        border: 1px solid var(--border-medium) !important;
+      }
+
+      /* Form labels */
+      .form-label {
+        color: var(--text-muted) !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 0.72rem !important;
+      }
+
+      /* Slider styling (rc-slider) */
+      .rc-slider-track {
+        background-color: var(--accent-blue) !important;
+      }
+      .rc-slider-handle {
+        border-color: var(--accent-blue) !important;
+        background-color: var(--accent-blue) !important;
+      }
+      .rc-slider-rail {
+        background-color: var(--bg-deep) !important;
+      }
+      .rc-slider-mark-text {
+        color: var(--text-muted) !important;
+      }
+      .rc-slider-mark-text-active {
+        color: var(--text-primary) !important;
+      }
+
+      /* Hr divider */
+      hr {
+        border-color: var(--border-subtle) !important;
+        opacity: 1 !important;
+        margin: 14px 0 !important;
+      }
+
+      /* Buttons */
+      button, .btn {
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+      }
+
+      /* Scrollbars */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: var(--bg-deep); }
+      ::-webkit-scrollbar-thumb {
+        background: var(--bg-card-hover);
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover { background: var(--accent-blue); }
+
+      /* Generic class helpers we'll use throughout the app */
+      .panel-card {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+      }
+      .panel-card-deep {
+        background-color: var(--bg-deep);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+      }
+    </style>
+</head>
+<body>
+    {%app_entry%}
+    <footer>
+        {%config%}
+        {%scripts%}
+        {%renderer%}
+    </footer>
+</body>
+</html>
+'''
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  WIDGET NAVIGATION
@@ -46,6 +230,7 @@ WIDGETS = {
     "matrix": ("Market Matrix", "\U0001F5FA"),
     "cot":    ("COT Board",     "\U0001F4CB"),
     "market": ("Broad Market",  "\U0001F30E"),
+    "heatmap": ("Heatmap",      "\U0001F525"),
 }
 
 def _build_nav_buttons(active_id="greeks"):
@@ -66,8 +251,10 @@ def _build_nav_buttons(active_id="greeks"):
                             "flexShrink": 0,
                         }),
                         html.Span(label, className="nav-label",
-                                  style={"fontSize": "0.80rem",
-                                         "whiteSpace": "nowrap", "overflow": "hidden"}),
+                                  style={"fontSize": "0.82rem",
+                                         "whiteSpace": "nowrap",
+                                         "overflow": "hidden",
+                                         "letterSpacing": "0.02em"}),
                     ],
                     id={"type": "nav-btn", "index": wid},
                     n_clicks=0,
@@ -75,13 +262,16 @@ def _build_nav_buttons(active_id="greeks"):
                         "width": "100%",
                         "display": "flex",
                         "alignItems": "center",
-                        "padding": "10px 0",
+                        "padding": "11px 0",
                         "border": "none",
+                        "borderLeft": ("3px solid var(--accent-blue)" if is_active
+                                        else "3px solid transparent"),
                         "borderRadius": "0",
                         "cursor": "pointer",
-                        "color": "#fff" if is_active else "#aaa",
-                        "backgroundColor": "rgba(255,255,255,0.08)" if is_active else "transparent",
-                        "fontWeight": "600" if is_active else "400",
+                        "color": "var(--text-primary)" if is_active else "var(--text-muted)",
+                        "backgroundColor": ("var(--bg-card)" if is_active
+                                              else "transparent"),
+                        "fontWeight": "600" if is_active else "500",
                         "transition": "all 0.15s",
                     },
                 ),
@@ -101,15 +291,15 @@ nav_sidebar = html.Div(
             n_clicks=0,
             style={
                 "width": "100%",
-                "padding": "10px",
+                "padding": "12px",
                 "border": "none",
-                "borderBottom": "1px solid rgba(255,255,255,0.08)",
+                "borderBottom": "1px solid var(--border-subtle)",
                 "backgroundColor": "transparent",
-                "color": "#aaa",
+                "color": "var(--text-muted)",
                 "fontSize": "1.2rem",
                 "cursor": "pointer",
                 "textAlign": "center",
-                "marginBottom": "8px",
+                "marginBottom": "10px",
             },
         ),
         # Widget buttons
@@ -125,8 +315,8 @@ nav_sidebar = html.Div(
         "height": "100vh",
         "overflowY": "auto",
         "overflowX": "hidden",
-        "borderRight": "1px solid rgba(255,255,255,0.10)",
-        "backgroundColor": "rgba(0,0,0,0.4)",
+        "borderRight": "1px solid var(--border-subtle)",
+        "backgroundColor": "var(--bg-deep)",
         "transition": "width 0.2s, min-width 0.2s",
         "flexShrink": 0,
     },
@@ -277,8 +467,9 @@ settings_sidebar = html.Div(
         "minWidth": f"{SIDEBAR_WIDTH}px",
         "height": "100%",
         "overflowY": "auto",
-        "padding": "12px",
-        "borderRight": "1px solid rgba(255,255,255,0.08)",
+        "padding": "14px",
+        "borderRight": "1px solid var(--border-subtle)",
+        "backgroundColor": "var(--bg-deep)",
     },
 )
 
@@ -354,56 +545,10 @@ charts_panel = html.Div(
                                 "borderRight": "1px solid rgba(255,255,255,0.10)",
                             },
                         ),
-                        # Right half: Claude-powered analyst
+                        # Right half: live Greek Profile Analysis
                         html.Div(
-                            [
-                                html.Div(
-                                    [
-                                        html.Span("Claude Analyst",
-                                                  style={"fontSize": "0.85rem",
-                                                         "fontWeight": "600",
-                                                         "color": "#c4a3ff",
-                                                         "letterSpacing": "0.05em"}),
-                                        html.Button(
-                                            "Analyze Now",
-                                            id="btn-claude-analyze",
-                                            n_clicks=0,
-                                            style={
-                                                "marginLeft": "auto",
-                                                "padding": "4px 12px",
-                                                "border": "1px solid #7c4dff",
-                                                "borderRadius": "4px",
-                                                "backgroundColor": "rgba(124,77,255,0.15)",
-                                                "color": "#c4a3ff",
-                                                "cursor": "pointer",
-                                                "fontSize": "0.78rem",
-                                                "fontWeight": "600",
-                                            },
-                                        ),
-                                    ],
-                                    style={"display": "flex",
-                                           "alignItems": "center",
-                                           "marginBottom": "6px"},
-                                ),
-                                dcc.Loading(
-                                    id="claude-loading",
-                                    type="dot",
-                                    color="#c4a3ff",
-                                    children=html.Div(
-                                        id="claude-panel",
-                                        children=[
-                                            html.Div(
-                                                "Press \"Analyze Now\" to get "
-                                                "a Claude-powered trade analysis "
-                                                "using all current dashboard data.",
-                                                style={"color": "#888",
-                                                       "fontSize": "0.80rem",
-                                                       "fontStyle": "italic"},
-                                            ),
-                                        ],
-                                    ),
-                                ),
-                            ],
+                            id="profile-panel",
+                            children="Analyzing profile...",
                             style={
                                 "flex": 1,
                                 "minWidth": 0,
@@ -417,8 +562,8 @@ charts_panel = html.Div(
                         "flex": 0.7,
                         "minHeight": 0,
                         "display": "flex",
-                        "backgroundColor": "rgba(0,0,0,0.35)",
-                        "borderTop": "1px solid rgba(255,255,255,0.10)",
+                        "backgroundColor": "var(--bg-deep)",
+                        "borderTop": "1px solid var(--border-subtle)",
                     },
                 ),
             ],
@@ -445,10 +590,10 @@ metrics_header = html.Div(
     style={
         "display": "flex",
         "alignItems": "center",
-        "padding": "4px 8px",
-        "borderBottom": "1px solid rgba(255,255,255,0.08)",
-        "backgroundColor": "rgba(0,0,0,0.3)",
-        "minHeight": "42px",
+        "padding": "6px 10px",
+        "borderBottom": "1px solid var(--border-subtle)",
+        "backgroundColor": "var(--bg-deep)",
+        "minHeight": "44px",
         "flexShrink": 0,
         "overflowX": "auto",
         "whiteSpace": "nowrap",
@@ -558,8 +703,9 @@ matrix_settings = html.Div(
         "minWidth": f"{SIDEBAR_WIDTH}px",
         "height": "100vh",
         "overflowY": "auto",
-        "padding": "12px",
-        "borderRight": "1px solid rgba(255,255,255,0.08)",
+        "padding": "14px",
+        "borderRight": "1px solid var(--border-subtle)",
+        "backgroundColor": "var(--bg-deep)",
     },
 )
 
@@ -637,10 +783,11 @@ cot_widget = html.Div(
                         "overflowX": "auto",
                         "overflowY": "auto",
                         "height": "calc(100vh - 100px)",
+                        "borderRadius": "8px",
                     },
                     style_cell={
-                        "backgroundColor": "#0a0a0a",
-                        "color": "#e0e0e0",
+                        "backgroundColor": "#1a1e3a",
+                        "color": "#cbd5e1",
                         "fontFamily": "Inter, system-ui, sans-serif",
                         "fontSize": "0.85rem",
                         "padding": "10px 14px",
@@ -649,14 +796,16 @@ cot_widget = html.Div(
                         "whiteSpace": "nowrap",
                     },
                     style_header={
-                        "backgroundColor": "#000",
-                        "color": "#e0e0e0",
+                        "backgroundColor": "#14172a",
+                        "color": "#7986b4",
                         "fontWeight": "700",
-                        "fontSize": "0.80rem",
-                        "borderBottom": "2px solid rgba(255,255,255,0.10)",
+                        "fontSize": "0.74rem",
+                        "borderBottom": "2px solid rgba(91,141,238,0.20)",
                         "textAlign": "center",
-                        "padding": "12px 10px",
+                        "padding": "14px 10px",
                         "lineHeight": "1.2",
+                        "textTransform": "uppercase",
+                        "letterSpacing": "0.04em",
                     },
                     style_cell_conditional=[
                         {"if": {"column_id": "symbol"},
@@ -664,7 +813,7 @@ cot_widget = html.Div(
                          "fontWeight": "700",
                          "color": "#fff",
                          "minWidth": "100px",
-                         "backgroundColor": "#0a0a0a"},
+                         "backgroundColor": "#1a1e3a"},
                     ],
                 ),
             ],
@@ -724,11 +873,119 @@ market_widget = html.Div(
     style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
 )
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  HEATMAP WIDGET  (Bookmap-style L2 depth heatmap)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Sidebar settings for heatmap
+heatmap_sidebar = html.Div(
+    [
+        html.H6("Heatmap", style={"color": "var(--text-primary)", "marginBottom": "12px"}),
+
+        dbc.Label("Symbol", className="fw-bold", style={"fontSize": "0.85rem"}),
+        dcc.Dropdown(
+            id="heatmap-ticker",
+            options=[{"label": label, "value": sym}
+                     for label, sym, _, _, _ in heatmap_data.DEFAULT_TICKERS],
+            value="ES",
+            clearable=False,
+            className="mb-3",
+            style={"color": "#111"},
+        ),
+
+        dbc.Label("Color Scheme", className="fw-bold", style={"fontSize": "0.85rem"}),
+        dbc.RadioItems(
+            id="heatmap-colorscheme",
+            options=[
+                {"label": "Bookmap (default)", "value": "bookmap"},
+                {"label": "Viridis", "value": "viridis"},
+                {"label": "Hot", "value": "hot"},
+            ],
+            value="bookmap",
+            className="mb-3",
+        ),
+
+        dbc.Label("Trade Trail", className="fw-bold", style={"fontSize": "0.85rem"}),
+        dbc.RadioItems(
+            id="heatmap-trail",
+            options=[
+                {"label": "Show", "value": "show"},
+                {"label": "Hide", "value": "hide"},
+            ],
+            value="show",
+            inline=True,
+            className="mb-3",
+        ),
+
+        dbc.Label("Depth Levels", className="fw-bold", style={"fontSize": "0.85rem"}),
+        dcc.Slider(
+            id="heatmap-depth-slider",
+            min=5, max=25, step=5, value=25,
+            marks={5: "5", 10: "10", 25: "25"},
+            tooltip={"placement": "bottom", "always_visible": False},
+            className="mb-3",
+        ),
+
+        html.Button(
+            "↻ Reset Zoom",
+            id="heatmap-reset-zoom",
+            n_clicks=0,
+            style={
+                "width": "100%",
+                "padding": "8px 14px",
+                "border": "1px solid var(--accent-blue)",
+                "borderRadius": "8px",
+                "backgroundColor": "rgba(91,141,238,0.10)",
+                "color": "var(--accent-blue)",
+                "cursor": "pointer",
+                "fontSize": "0.82rem",
+                "fontWeight": "600",
+                "letterSpacing": "0.02em",
+                "marginBottom": "12px",
+            },
+        ),
+
+        dcc.Store(id="heatmap-uirevision", data={"key": "heatmap-v6-x-follows"}),
+        dcc.Store(id="heatmap-last-applied-uirev",
+                  data={"key": "", "range": None}),
+
+        html.Hr(),
+        html.Div(id="heatmap-status",
+                 style={"fontSize": "0.75rem", "color": "var(--text-muted)",
+                        "whiteSpace": "pre-line"}),
+    ],
+    style={
+        "width": f"{SIDEBAR_WIDTH}px",
+        "minWidth": f"{SIDEBAR_WIDTH}px",
+        "height": "100vh",
+        "overflowY": "auto",
+        "padding": "14px",
+        "borderRight": "1px solid var(--border-subtle)",
+        "backgroundColor": "var(--bg-deep)",
+    },
+)
+
+heatmap_widget = html.Div(
+    id="widget-heatmap",
+    children=[
+        heatmap_sidebar,
+        html.Div(
+            dcc.Graph(
+                id="heatmap-chart",
+                style={"height": "100%"},
+                config={"displayModeBar": False},
+            ),
+            style={"flex": 1, "minWidth": 0, "padding": "8px"},
+        ),
+    ],
+    style={"display": "none", "flex": 1, "height": "100vh", "overflow": "hidden"},
+)
+
 # -- Widget content area (shows the active widget) --
 
 widget_content = html.Div(
     id="widget-content",
-    children=[greeks_widget, matrix_widget, cot_widget, market_widget],
+    children=[greeks_widget, matrix_widget, cot_widget, market_widget, heatmap_widget],
     style={"flex": 1, "display": "flex", "overflow": "hidden"},
 )
 
@@ -803,6 +1060,7 @@ def toggle_nav(n, nav_data):
     Output("widget-matrix", "style"),
     Output("widget-cot", "style"),
     Output("widget-market", "style"),
+    Output("widget-heatmap", "style"),
     Output("nav-buttons", "children"),
     Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
@@ -816,7 +1074,7 @@ def switch_widget(n_clicks_list):
     active = triggered.get("index", "greeks") if isinstance(triggered, dict) else "greeks"
 
     # Greeks widget needs flexDirection: column (header on top, content below).
-    # Matrix, COT, and Market use the default row layout.
+    # Others use the default row layout.
     greeks_style = {
         "flex": 1,
         "height": "100vh",
@@ -842,11 +1100,17 @@ def switch_widget(n_clicks_list):
         "overflow": "hidden",
         "display": "flex" if active == "market" else "none",
     }
+    heatmap_style = {
+        "flex": 1,
+        "height": "100vh",
+        "overflow": "hidden",
+        "display": "flex" if active == "heatmap" else "none",
+    }
 
     # Rebuild nav buttons with updated active highlight
     nav_buttons = _build_nav_buttons(active_id=active)
 
-    return greeks_style, matrix_style, cot_style, market_style, nav_buttons
+    return greeks_style, matrix_style, cot_style, market_style, heatmap_style, nav_buttons
 
 
 # ── Market Matrix refresh slider ─────────────────────────────────────────────
@@ -1006,140 +1270,6 @@ def poll_matrix(n, greek_col, mode, view, prev_data):
     return figures[0], figures[1], figures[2], figures[3], status, new_prev
 
 
-# ── Claude Analyst button callback ───────────────────────────────────────────
-
-@app.callback(
-    Output("claude-panel", "children"),
-    Input("btn-claude-analyze", "n_clicks"),
-    prevent_initial_call=True,
-)
-def on_claude_analyze(n_clicks):
-    """Fires when the user clicks 'Analyze Now' — sends current dashboard
-    state to the Claude API and returns the formatted analysis."""
-    if not n_clicks:
-        raise dash.exceptions.PreventUpdate
-    if not data_fetcher.data_manager:
-        return html.Div("Data manager not ready.",
-                        style={"color": "#ef5350"})
-
-    cache = data_fetcher.data_manager.get_cache()
-    chain = cache.get("chain")
-    if chain is None or (hasattr(chain, "empty") and chain.empty):
-        return html.Div("No chain data yet — wait for the first fetch.",
-                        style={"color": "#ff9800"})
-
-    # Build snapshot of everything
-    ticker   = cache["ticker"]
-    spot     = cache["spot"]
-    resolved = cache["expiry"]
-    mode     = SETTINGS.greek_mode
-
-    exp_df = compute_exposure(chain, spot, greek_mode=mode)
-    regime = classify_regime(exp_df, spot) if not exp_df.empty else {}
-    live   = compute_live_metrics(chain, spot)
-
-    vix_data = cache.get("vix", {"current": 0, "prev_close": 0})
-    vv = compute_vanna_vix_signal(exp_df,
-                                   vix_data.get("current", 0),
-                                   vix_data.get("prev_close", 0))
-    cc = compute_charm_clock(exp_df, spot)
-
-    from greek_calculator import compute_skew, compute_pinning_strength
-    import session_store
-    skew = compute_skew(chain, spot)
-
-    # Term structure
-    term_raw = cache.get("term_structure", {})
-    front_iv = live.get("atm_iv", 0)
-    back_iv = term_raw.get("back_iv", 0)
-    if front_iv > 0 and back_iv > 0:
-        ratio = front_iv / back_iv
-        state = "BACKWARDATION" if ratio > 1.05 else ("CONTANGO" if ratio < 0.95 else "FLAT")
-    else:
-        ratio = 0
-        state = "N/A"
-    term = {"front_iv": front_iv, "back_iv": back_iv,
-            "back_dte": term_raw.get("back_dte", 0),
-            "ratio": round(ratio, 3), "state": state}
-
-    iv_rank = session_store.get_iv_rank_percentile(ticker, front_iv)
-
-    dte_years_val = chain["dte_years"].values[0] if not chain.empty else None
-    pinning = compute_pinning_strength(exp_df, chain, spot, dte_years=dte_years_val)
-
-    rule_signal = compute_trade_signal(
-        spot, regime, vv, cc, skew, term, iv_rank, pinning, live, exp_df,
-    )
-
-    # Top strikes (by absolute gamma, near ATM)
-    exp_near = exp_df.copy()
-    exp_near["dist"] = (exp_near["strike"] - spot).abs()
-    exp_near = exp_near.sort_values("dist").head(20)
-    exp_near = exp_near.sort_values(
-        "gamma_exp", key=lambda s: s.abs(), ascending=False).head(12)
-    top_strikes = exp_near.to_dict("records")
-
-    # DTE
-    exp_date = dt.date(int(resolved[:4]), int(resolved[4:6]), int(resolved[6:]))
-    dte_calendar = max((exp_date - dt.date.today()).days, 0)
-
-    data = {
-        "ticker":          ticker,
-        "spot":            spot,
-        "expiry":          resolved,
-        "dte":             dte_calendar,
-        "mode":            mode,
-        "regime":          regime,
-        "vanna_vix":       vv,
-        "charm_clock":     cc,
-        "skew":            skew,
-        "term":            term,
-        "iv_rank":         iv_rank,
-        "pinning":         pinning,
-        "live_metrics":    live,
-        "prev_day_hl":     cache.get("prev_day_hl", {}),
-        "session_metrics": cache.get("session_metrics", {}),
-        "top_strikes":     top_strikes,
-        "rule_signal":     rule_signal,
-    }
-
-    result = claude_analyst.analyze(data)
-
-    if not result["ok"]:
-        return html.Div([
-            html.Div("Error calling Claude:", style={"color": "#ef5350",
-                                                      "fontWeight": "600",
-                                                      "marginBottom": "6px"}),
-            html.Pre(result["error"],
-                     style={"color": "#ef9a9a", "fontSize": "0.75rem",
-                            "whiteSpace": "pre-wrap"}),
-        ])
-
-    # Success — format the response as markdown
-    analysis = result["analysis"]
-    tokens_in = result.get("tokens_in", 0)
-    tokens_out = result.get("tokens_out", 0)
-    model = result.get("model", "?")
-    cost_est = (tokens_in * 3 + tokens_out * 15) / 1_000_000
-
-    ts = dt.datetime.now(tz=ET).strftime("%H:%M:%S ET")
-
-    return html.Div([
-        dcc.Markdown(
-            analysis,
-            style={"color": "#e0e0e0", "fontSize": "0.82rem",
-                   "lineHeight": "1.5"},
-        ),
-        html.Div(
-            f"— {model}  |  {tokens_in} in / {tokens_out} out tokens  |  "
-            f"${cost_est:.4f}  |  {ts}",
-            style={"marginTop": "10px", "paddingTop": "8px",
-                   "borderTop": "1px solid rgba(255,255,255,0.08)",
-                   "color": "#666", "fontSize": "0.70rem",
-                   "fontFamily": "monospace"},
-        ),
-    ])
-
 
 # ── Broad Market State poll callback ─────────────────────────────────────────
 
@@ -1158,10 +1288,10 @@ def _market_card(row):
             html.Div(f"Error: {error}",
                      style={"fontSize": "0.72rem", "color": "#ef5350"}),
         ], style={
-            "padding": "12px 14px",
-            "border": "1px solid rgba(255,255,255,0.06)",
-            "borderRadius": "6px",
-            "backgroundColor": "#0e0e0e",
+            "padding": "14px 16px",
+            "border": "1px solid var(--border-subtle)",
+            "borderRadius": "8px",
+            "backgroundColor": "var(--bg-card)",
         })
 
     spot = row.get("spot", 0)
@@ -1169,11 +1299,7 @@ def _market_card(row):
     flow = row.get("flow_ratio", 0)
     score = row.get("score", 50)
     label = row.get("label", "NEUTRAL")
-    sma20 = row.get("sma20", 0)
-    sma50 = row.get("sma50", 0)
-    sma200 = row.get("sma200", 0)
     vol_ratio = row.get("vol_ratio", 0)
-    trend_score = row.get("trend_score", 50)
     is_composite = row.get("is_composite", False)
     constituents = row.get("constituents", [])
 
@@ -1191,17 +1317,6 @@ def _market_card(row):
 
     pct_color = "#66bb6a" if pct >= 0 else "#ef5350"
     flow_color = "#66bb6a" if flow >= 0 else "#ef5350"
-
-    # MA stack indicator
-    above_20 = spot > sma20 if sma20 > 0 else False
-    above_50 = spot > sma50 if sma50 > 0 else False
-    above_200 = spot > sma200 if sma200 > 0 else False
-    def _ma_dot(above):
-        return html.Span(
-            "●",
-            style={"color": "#22c55e" if above else "#ef4444",
-                   "marginRight": "2px", "fontSize": "0.85rem"},
-        )
 
     # Vol ratio color
     if vol_ratio >= 1.3:
@@ -1305,40 +1420,12 @@ def _market_card(row):
             ], style={"flex": 1, "borderLeft": "1px solid rgba(255,255,255,0.06)",
                        "paddingLeft": "10px"}),
             html.Div([
-                html.Div("MA 20/50/200",
-                         style={"fontSize": "0.62rem", "color": "#888",
-                                "letterSpacing": "0.06em"}),
-                html.Div([
-                    _ma_dot(above_20),
-                    _ma_dot(above_50),
-                    _ma_dot(above_200),
-                ], style={"lineHeight": "1.0", "marginTop": "2px"}),
-            ], style={"flex": 1.2,
-                       "borderLeft": "1px solid rgba(255,255,255,0.06)",
-                       "paddingLeft": "10px"}),
-        ], style={"display": "flex", "marginBottom": "8px"}),
-
-        # Stats row 2: Volume ratio / Trend score
-        html.Div([
-            html.Div([
                 html.Div("VOL vs 20D",
                          style={"fontSize": "0.62rem", "color": "#888",
                                 "letterSpacing": "0.08em"}),
                 html.Div(f"{vol_ratio:.2f}x",
                          style={"fontSize": "0.85rem",
                                 "color": vol_color,
-                                "fontFamily": "monospace",
-                                "fontWeight": "600"}),
-            ], style={"flex": 1}),
-            html.Div([
-                html.Div("TREND",
-                         style={"fontSize": "0.62rem", "color": "#888",
-                                "letterSpacing": "0.08em"}),
-                html.Div(f"{trend_score:.0f}",
-                         style={"fontSize": "0.85rem",
-                                "color": ("#66bb6a" if trend_score >= 60
-                                          else "#ef5350" if trend_score < 40
-                                          else "#bbb"),
                                 "fontFamily": "monospace",
                                 "fontWeight": "600"}),
             ], style={"flex": 1, "borderLeft": "1px solid rgba(255,255,255,0.06)",
@@ -1360,11 +1447,11 @@ def _market_card(row):
         ),
 
     ], style={
-        "padding": "12px 14px",
+        "padding": "14px 16px",
         "border": ("1px solid rgba(251,191,36,0.40)" if is_composite
-                   else "1px solid rgba(255,255,255,0.06)"),
-        "borderRadius": "6px",
-        "backgroundColor": ("#1a1408" if is_composite else "#0e0e0e"),
+                   else "1px solid var(--border-subtle)"),
+        "borderRadius": "8px",
+        "backgroundColor": ("#2a2410" if is_composite else "var(--bg-card)"),
     })
 
 
@@ -1381,6 +1468,7 @@ def poll_market_state(n):
     rows = cache.get("rows", [])
     error = cache.get("error")
     fetched_at = cache.get("fetched_at", 0)
+    data_source = cache.get("data_source", "?")
 
     if not rows:
         return error or "Loading...", ""
@@ -1400,7 +1488,43 @@ def poll_market_state(n):
     else:
         ts = "—"
 
-    meta_text = (
+    meta_parts = []
+
+    # Data source banner — RED if mock, green if live IB
+    if data_source == "MOCK":
+        meta_parts.append(
+            html.Span(
+                "⚠ MOCK DATA — IB CONNECTION FAILED",
+                style={
+                    "padding": "3px 10px",
+                    "borderRadius": "6px",
+                    "backgroundColor": "#7f1d1d",
+                    "color": "#fecaca",
+                    "fontSize": "0.72rem",
+                    "fontWeight": "700",
+                    "letterSpacing": "0.05em",
+                    "marginRight": "12px",
+                },
+            )
+        )
+    elif data_source == "IB":
+        meta_parts.append(
+            html.Span(
+                "● LIVE",
+                style={
+                    "padding": "3px 10px",
+                    "borderRadius": "6px",
+                    "backgroundColor": "rgba(34,197,94,0.15)",
+                    "color": "#22c55e",
+                    "fontSize": "0.72rem",
+                    "fontWeight": "700",
+                    "letterSpacing": "0.05em",
+                    "marginRight": "12px",
+                },
+            )
+        )
+
+    meta_parts.append(
         f"Composite: {avg_score:.0f}/100  |  "
         f"Bullish: {bull_count}/{len(valid)}  |  "
         f"Bearish: {bear_count}/{len(valid)}  |  "
@@ -1409,7 +1533,461 @@ def poll_market_state(n):
 
     cards = [_market_card(r) for r in rows]
 
-    return cards, meta_text
+    return cards, meta_parts
+
+
+# ── Heatmap poll callback ───────────────────────────────────────────────────
+
+# Bookmap-like color scheme.
+# Heavily biased toward the cool half: the bottom ~95% of the gradient is
+# all dark navy → blue → sky blue, so the bulk of order-book cells render
+# dark. Only the top ~5% reaches yellow → orange → red for true outliers.
+BOOKMAP_COLORSCALE = [
+    [0.00, "rgba(12, 22, 55, 1.0)"],     # deep navy (matches background)
+    [0.40, "rgba(18, 32, 80, 1.0)"],     # navy — covers most cells
+    [0.65, "rgba(22, 45, 115, 1.0)"],    # darker blue — typical depth
+    [0.85, "rgba(30, 75, 175, 1.0)"],    # blue — meaningfully large
+    [0.95, "rgba(60, 170, 230, 1.0)"],   # sky blue — notable
+    [0.97, "rgba(255, 235, 110, 1.0)"],  # yellow — large
+    [0.99, "rgba(240, 140, 40, 1.0)"],   # orange — very large
+    [1.00, "rgba(180, 25, 25, 1.0)"],    # dark red — extreme
+]
+
+
+def _build_heatmap_figure(state, color_scheme="bookmap", show_trail=True,
+                            uirevision_key="heatmap-default",
+                            apply_default_range=True,
+                            last_applied_range=None):
+    """Build the Plotly heatmap figure from manager state.
+
+    Args:
+      apply_default_range: When True, the figure uses a freshly-computed
+        range fitted to recent data. When False, falls back to
+        `last_applied_range` (so the range value doesn't change between
+        polls, which keeps uirevision happy and preserves user zoom).
+      last_applied_range: Dict {"x": (lo, hi), "y": (lo, hi)} from the
+        previous render. Used when apply_default_range is False.
+    """
+    snapshots = state.get("snapshots", [])
+    trades = state.get("trades", [])
+    last_price = state.get("last_price", 0)
+    best_bid = state.get("best_bid", 0)
+    best_ask = state.get("best_ask", 0)
+
+    if not snapshots:
+        empty_fig = go.Figure()
+        empty_fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#0a1230",
+            font={"color": "#cbd5e1"},
+            annotations=[{
+                "text": "Waiting for depth data...",
+                "xref": "paper", "yref": "paper",
+                "x": 0.5, "y": 0.5, "showarrow": False,
+                "font": {"size": 16, "color": "#7986b4"},
+            }],
+        )
+        return empty_fig
+
+    # ── Build a uniform price grid across the visible band ─────────
+    # Find anchor spot (use latest snapshot's spot)
+    latest = snapshots[-1]
+    spot_now = latest.get("spot", last_price)
+    if not spot_now or spot_now <= 0:
+        spot_now = (best_bid + best_ask) / 2 if (best_bid and best_ask) else 100
+
+    # Determine tick size: use the gap between top-of-book bid prices
+    # if the contract has visible depth, else fall back to 1% of spot / 100
+    tick_size = 0.25  # default to 0.25 (ES tick)
+    if latest["bids"] and len(latest["bids"]) >= 2:
+        diffs = sorted({round(latest["bids"][i][0] - latest["bids"][i+1][0], 4)
+                        for i in range(len(latest["bids"]) - 1)
+                        if latest["bids"][i][0] > latest["bids"][i+1][0]})
+        if diffs:
+            tick_size = max(diffs[0], 0.01)
+
+    # Build price grid: ±0.5% band centered on spot, in tick-size steps
+    band_dollars = max(spot_now * 0.005, tick_size * 30)
+    n_levels_each_side = int(band_dollars / tick_size)
+    grid_low  = spot_now - n_levels_each_side * tick_size
+    grid_high = spot_now + n_levels_each_side * tick_size
+    n_rows = int(round((grid_high - grid_low) / tick_size)) + 1
+    price_grid = np.linspace(grid_low, grid_high, n_rows)
+
+    # ── Build the 2D matrix: rows=price, cols=time ─────────────────
+    n_cols = len(snapshots)
+    matrix = np.zeros((n_rows, n_cols), dtype=float)
+
+    for ci, snap in enumerate(snapshots):
+        # For each side of the book, accumulate sizes into nearest grid cell
+        for px, sz in (snap["bids"] + snap["asks"]):
+            if px <= 0 or sz <= 0:
+                continue
+            ri = int(round((px - grid_low) / tick_size))
+            if 0 <= ri < n_rows:
+                matrix[ri, ci] += sz
+
+    # Apply log compression — order book sizes are heavily right-skewed
+    matrix_disp = np.log1p(matrix)
+
+    # Anchor the color range to a high percentile rather than the max.
+    # 99th percentile = only the top 1% of cells saturate at red/orange.
+    # This is the key knob: lower → more warm colors, higher → more navy.
+    nonzero = matrix_disp[matrix_disp > 0]
+    if len(nonzero) > 50:
+        z_max = float(np.percentile(nonzero, 99))
+    elif len(nonzero) > 0:
+        z_max = float(nonzero.max())
+    else:
+        z_max = 1.0
+    if z_max <= 0:
+        z_max = 1.0
+
+    # X axis: snapshot timestamps converted to local time strings
+    times = [dt.datetime.fromtimestamp(s["ts"], tz=ET) for s in snapshots]
+
+    # Pick colorscale
+    if color_scheme == "bookmap":
+        colorscale = BOOKMAP_COLORSCALE
+    elif color_scheme == "viridis":
+        colorscale = "Viridis"
+    else:   # "hot"
+        colorscale = "Hot"
+
+    # ── Use subplots so the heatmap has a depth-bar sidekick on the right ──
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.92, 0.08],
+        horizontal_spacing=0.005,
+        shared_yaxes=True,
+        specs=[[{"type": "heatmap"}, {"type": "bar"}]],
+    )
+
+    # ── Main heatmap (left, ~92% of width) ──
+    fig.add_trace(go.Heatmap(
+        z=matrix_disp,
+        x=times,
+        y=price_grid,
+        colorscale=colorscale,
+        showscale=False,
+        zmin=0,
+        zmax=z_max,
+        hovertemplate=(
+            "Time: %{x|%H:%M:%S}<br>"
+            "Price: $%{y:,.2f}<br>"
+            "Size (log): %{z:.2f}<extra></extra>"
+        ),
+        zsmooth=False,
+    ), row=1, col=1)
+
+    # ── Current-snapshot depth bars (right, ~8% of width) ──
+    # Show the latest order book as horizontal bars per price level.
+    # Bid side = green-ish, Ask side = red-ish, length proportional to size.
+    latest_bids = latest.get("bids", [])
+    latest_asks = latest.get("asks", [])
+    bar_prices, bar_sizes, bar_colors = [], [], []
+    for px, sz in latest_bids:
+        if px > 0 and sz > 0:
+            bar_prices.append(px)
+            bar_sizes.append(sz)
+            bar_colors.append("rgba(34, 197, 94, 0.75)")    # bid = green
+    for px, sz in latest_asks:
+        if px > 0 and sz > 0:
+            bar_prices.append(px)
+            bar_sizes.append(sz)
+            bar_colors.append("rgba(239, 68, 68, 0.75)")    # ask = red
+
+    if bar_prices:
+        fig.add_trace(go.Bar(
+            x=bar_sizes,
+            y=bar_prices,
+            orientation="h",
+            marker={"color": bar_colors, "line": {"width": 0}},
+            hovertemplate="Price: $%{y:,.2f}<br>Size: %{x:,}<extra></extra>",
+            showlegend=False,
+            width=tick_size * 0.9,    # bar height = ~one price tick
+        ), row=1, col=2)
+
+    # ── Trade trail overlay ─────────────────────────────────────────
+    if show_trail and trades:
+        trade_times = [dt.datetime.fromtimestamp(t["ts"], tz=ET) for t in trades]
+        trade_prices = [t["price"] for t in trades]
+        trade_sizes = [t["size"] for t in trades]
+        trade_colors = ["#22c55e" if t["side"] == "buy" else "#ef4444"
+                        for t in trades]
+
+        # Marker size scaled by log of trade size (so big prints stand out)
+        marker_sizes = [max(3, min(20, np.log1p(s) * 2.5)) for s in trade_sizes]
+
+        fig.add_trace(go.Scatter(
+            x=trade_times,
+            y=trade_prices,
+            mode="markers",
+            marker={
+                "size": marker_sizes,
+                "color": trade_colors,
+                "opacity": 0.7,
+                "line": {"width": 0},
+            },
+            customdata=list(zip(trade_sizes,
+                                 [t["side"].upper() for t in trades])),
+            hovertemplate=(
+                "Time: %{x|%H:%M:%S}<br>"
+                "Price: $%{y:,.2f}<br>"
+                "Size: %{customdata[0]}<br>"
+                "Side: %{customdata[1]}<extra></extra>"
+            ),
+            showlegend=False,
+        ), row=1, col=1)
+
+        # Last-price line (the actual trade trail)
+        last_times = [dt.datetime.fromtimestamp(s["ts"], tz=ET)
+                      for s in snapshots if s.get("spot", 0) > 0]
+        last_prices = [s["spot"] for s in snapshots if s.get("spot", 0) > 0]
+        if last_prices:
+            fig.add_trace(go.Scatter(
+                x=last_times,
+                y=last_prices,
+                mode="lines",
+                line={"color": "#fbbf24", "width": 1.2},
+                hoverinfo="skip",
+                showlegend=False,
+            ), row=1, col=1)
+
+    # ── Layout polish ───────────────────────────────────────────────
+    # Bookmap's signature dark navy background — not pure black.
+    BOOKMAP_BG = "#0a1230"
+
+    # Default y-range: derived from the ACTUAL spread of prices in recent
+    # snapshots. We look at the last 60 snapshots (~1 min of data), find the
+    # full range of bid/ask prices that appeared, then pad by 15% so the band
+    # has breathing room without dwarfing the action.
+    recent_window = snapshots[-60:] if len(snapshots) >= 60 else snapshots
+    recent_prices = []
+    for snap in recent_window:
+        for px, sz in (snap.get("bids", []) + snap.get("asks", [])):
+            if px > 0 and sz > 0:
+                recent_prices.append(px)
+
+    if recent_prices:
+        data_low = min(recent_prices)
+        data_high = max(recent_prices)
+        data_span = data_high - data_low
+        # 15% breathing room each side, with a $2 floor so very tight books
+        # still have a usable view
+        pad = max(data_span * 0.15, 2.0)
+        y_default_low  = data_low - pad
+        y_default_high = data_high + pad
+    else:
+        # No data yet — fall back to ±$5 around spot
+        y_default_low  = spot_now - 5.0
+        y_default_high = spot_now + 5.0
+
+    # Default x-range: last 10 minutes. The data buffer holds 30 minutes
+    # of history, so the user can pan/zoom backward to see the full window.
+    if times:
+        x_default_high = times[-1]
+        x_default_low  = x_default_high - dt.timedelta(minutes=10)
+    else:
+        x_default_high = dt.datetime.now(tz=ET)
+        x_default_low  = x_default_high - dt.timedelta(minutes=10)
+
+    fig.update_layout(
+        paper_bgcolor=BOOKMAP_BG,
+        plot_bgcolor=BOOKMAP_BG,
+        font={"color": "#cbd5e1", "family": "Inter"},
+        margin={"l": 50, "r": 60, "t": 8, "b": 30},
+        # uirevision preserves user zoom/pan between updates.
+        uirevision=uirevision_key,
+        bargap=0,
+    )
+
+    # Heatmap axes (col 1)
+    # X-axis: ALWAYS recompute fresh (so the chart slides forward in time
+    # as new snapshots arrive). uirevision still preserves user zoom on x.
+    # Y-axis: use stored range on subsequent polls so the value doesn't shift
+    # underneath the user's preserved zoom.
+    if not apply_default_range and last_applied_range:
+        def _from_storable(v):
+            if isinstance(v, str):
+                try:
+                    return dt.datetime.fromisoformat(v)
+                except ValueError:
+                    return v
+            return v
+
+        y_raw = last_applied_range.get("y", (y_default_low, y_default_high))
+        y_lo, y_hi = _from_storable(y_raw[0]), _from_storable(y_raw[1])
+    else:
+        y_lo, y_hi = y_default_low, y_default_high
+
+    # x range is always the freshly-computed "last 10 minutes" window
+    x_lo, x_hi = x_default_low, x_default_high
+
+    fig.update_xaxes(
+        row=1, col=1,
+        showgrid=False,
+        color="#7986b4",
+        tickformat="%H:%M:%S",
+        gridcolor="rgba(255,255,255,0.04)",
+        range=[x_lo, x_hi],
+        autorange=False,
+    )
+    fig.update_yaxes(
+        row=1, col=1,
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.04)",
+        color="#7986b4",
+        tickformat=",.2f",
+        range=[y_lo, y_hi],
+        autorange=False,
+    )
+
+    # Depth-bar axes (col 2) — minimal, no labels, just the bars
+    fig.update_xaxes(
+        row=1, col=2,
+        showgrid=False,
+        showticklabels=False,
+        zeroline=False,
+        color="#7986b4",
+    )
+    fig.update_yaxes(
+        row=1, col=2,
+        showgrid=False,
+        showticklabels=True,
+        color="#7986b4",
+        tickformat=",.2f",
+        side="right",
+        zeroline=False,
+        range=[y_lo, y_hi],
+        autorange=False,
+    )
+
+    # Stash only the y-range we rendered. X is always recomputed so we
+    # don't need to persist it.
+    def _to_storable(v):
+        if isinstance(v, dt.datetime):
+            return v.isoformat()
+        return v
+
+    fig._applied_range = {
+        "y": (_to_storable(y_lo), _to_storable(y_hi)),
+    }
+
+    return fig
+
+
+@app.callback(
+    Output("heatmap-uirevision", "data"),
+    Input("heatmap-reset-zoom", "n_clicks"),
+    Input("heatmap-ticker", "value"),
+    State("heatmap-uirevision", "data"),
+    prevent_initial_call=True,
+)
+def update_heatmap_uirevision(reset_clicks, ticker, current):
+    """
+    Bumps the uirevision key whenever the user clicks 'Reset Zoom' or
+    switches tickers. A new key forces Plotly to reset zoom/pan state;
+    keeping the same key preserves the user's current view across polls.
+    The depth-level slider does NOT trigger a reset — it only changes
+    resolution within the same contract.
+    """
+    triggered = ctx.triggered_id
+    current = current or {"key": "heatmap-default"}
+
+    if triggered == "heatmap-reset-zoom":
+        prev_count = 0
+        try:
+            prev_count = int(current.get("key", "0").rsplit("-", 1)[-1])
+        except (ValueError, AttributeError):
+            prev_count = 0
+        return {"key": f"heatmap-reset-{prev_count + 1}"}
+    elif triggered == "heatmap-ticker":
+        return {"key": f"heatmap-{ticker}"}
+    return current
+
+
+@app.callback(
+    Output("heatmap-chart", "figure"),
+    Output("heatmap-status", "children"),
+    Output("heatmap-last-applied-uirev", "data"),
+    Input("interval-poll", "n_intervals"),
+    Input("heatmap-ticker", "value"),
+    Input("heatmap-colorscheme", "value"),
+    Input("heatmap-trail", "value"),
+    Input("heatmap-uirevision", "data"),
+    Input("heatmap-depth-slider", "value"),
+    State("heatmap-last-applied-uirev", "data"),
+)
+def poll_heatmap(n, ticker, color_scheme, trail_mode, uirev, depth_levels,
+                  last_applied):
+    if not heatmap_data.heatmap_manager:
+        return go.Figure(), "Heatmap manager not initialized", dash.no_update
+
+    # Forward user controls to the manager
+    if ticker:
+        heatmap_data.heatmap_manager.set_ticker(ticker)
+    if depth_levels:
+        heatmap_data.heatmap_manager.set_depth_levels(depth_levels)
+
+    state = heatmap_data.heatmap_manager.get_state()
+    show_trail = trail_mode == "show"
+    uirev_key = (uirev or {}).get("key", "heatmap-default")
+    last_key = (last_applied or {}).get("key", "")
+    last_range_data = (last_applied or {}).get("range")
+
+    # Only apply the explicit default range on a FRESH render (uirevision
+    # just changed — i.e. first load, Reset Zoom, or ticker change).
+    # On subsequent polls, reuse the previously-applied range so Plotly's
+    # uirevision can preserve user pan/zoom without our explicit range
+    # values shifting underneath it.
+    apply_default_range = (uirev_key != last_key)
+
+    fig = _build_heatmap_figure(state, color_scheme=color_scheme,
+                                  show_trail=show_trail,
+                                  uirevision_key=uirev_key,
+                                  apply_default_range=apply_default_range,
+                                  last_applied_range=last_range_data)
+
+    # Build status panel
+    src = state.get("data_source", "?")
+    src_badge = ("⚠ MOCK DATA" if src == "MOCK" else "● LIVE")
+    src_color = ("#ef4444" if src == "MOCK" else "#22c55e")
+
+    levels_active = state.get("depth_levels", 0)
+    levels_requested = depth_levels if depth_levels else "?"
+    status_lines = [
+        f"Contract: {state.get('contract', '—')}",
+        f"Depth:    {levels_active} active  (requested: {levels_requested})",
+        f"Best bid: ${state.get('best_bid', 0):,.2f}",
+        f"Best ask: ${state.get('best_ask', 0):,.2f}",
+        f"Last:     ${state.get('last_price', 0):,.2f}",
+        f"Snapshots: {len(state.get('snapshots', []))}",
+        f"",
+        f"{state.get('status', '')}",
+    ]
+    if state.get("error"):
+        status_lines.append(f"Error: {state['error']}")
+
+    status_text = html.Div([
+        html.Div(src_badge,
+                 style={"color": src_color, "fontWeight": "700",
+                        "marginBottom": "8px"}),
+        html.Div("\n".join(status_lines),
+                 style={"whiteSpace": "pre-line"}),
+    ])
+
+    # On fresh renders, persist the range we just used. On subsequent polls,
+    # leave the store untouched so the next poll continues using the same
+    # range (which is what keeps uirevision honoring user zoom).
+    if apply_default_range:
+        applied = getattr(fig, "_applied_range", None)
+        new_last_applied = {"key": uirev_key, "range": applied}
+    else:
+        new_last_applied = dash.no_update
+
+    return fig, status_text, new_last_applied
 
 
 # ── COT Board poll callback ──────────────────────────────────────────────────
@@ -1701,6 +2279,7 @@ def on_mode_change(mode):
     Output("chart-dex", "figure"),
     Output("chart-zomma", "figure"),
     Output("signal-panel", "children"),
+    Output("profile-panel", "children"),
     Output("metrics-header", "children"),
     Output("status-text", "children"),
     Output("dropdown-expiry", "options", allow_duplicate=True),
@@ -1719,19 +2298,19 @@ def poll_and_render(n, gamma_view, charm_view, vomma_view, speed_view,
                     vanna_view, zomma_view, prev_data):
     if not data_fetcher.data_manager:
         e = _empty_fig("Starting...")
-        return e, e, e, e, e, e, e, "Analyzing...", "Loading...", "Initialising...", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "Analyzing...", "Analyzing profile...", "Loading...", "Initialising...", dash.no_update, dash.no_update
 
     cache = data_fetcher.data_manager.get_cache()
 
     error = cache.get("error")
     if error:
         e = _empty_fig(f"Error: {error}")
-        return e, e, e, e, e, e, e, "No signal (error)", "Error", f"X  {error}", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "No signal (error)", "No profile (error)", "Error", f"X  {error}", dash.no_update, dash.no_update
 
     chain = cache.get("chain")
     if chain is None or (hasattr(chain, "empty") and chain.empty):
         e = _empty_fig("Waiting for data...")
-        return e, e, e, e, e, e, e, "Waiting for data...", "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
+        return e, e, e, e, e, e, e, "Waiting for data...", "Waiting for data...", "Waiting...", "Fetching from IB...", dash.no_update, dash.no_update
 
     ticker   = cache["ticker"]
     spot     = cache["spot"]
@@ -2105,6 +2684,14 @@ def poll_and_render(n, gamma_view, charm_view, vomma_view, speed_view,
     )
     signal_panel = _build_signal_panel(signal)
 
+    # ── Live Greek Profile Analysis ──────────────────────────────────
+    profile = compute_profile_analysis(
+        spot, regime, vanna_vix, charm_clock,
+        skew, term, iv_rank, pinning, live_metrics, exp_df,
+        prev_day_hl=prev_hl, session_metrics=session_metrics,
+    )
+    profile_panel = _build_profile_panel(profile)
+
     header = _build_metrics_header(ticker, spot, session_metrics,
                                     live_metrics, prev_hl, dte, updated,
                                     regime, vanna_vix, charm_clock,
@@ -2113,7 +2700,7 @@ def poll_and_render(n, gamma_view, charm_view, vomma_view, speed_view,
 
     return (fig_gamma, fig_charm, fig_vomma, fig_speed,
             fig_vanna, fig_dex, fig_zomma,
-            signal_panel, header, status, opts, new_prev)
+            signal_panel, profile_panel, header, status, opts, new_prev)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2493,6 +3080,198 @@ def _build_signal_panel(signal):
         html.Div([reasoning_block, caveat_block],
                  style={"display": "flex", "alignItems": "flex-start"}),
     ])
+
+
+def _build_profile_panel(profile):
+    """Render the live Greek Profile Analysis as a compact info panel."""
+    if not profile:
+        return "Analyzing..."
+
+    bias = profile.get("bias", "BALANCED")
+    bias_strength = profile.get("bias_strength", "WEAK")
+    regime_label = profile.get("regime_label", "")
+    trade_type = profile.get("trade_type", "")
+    summary = profile.get("summary", "")
+    key_levels = profile.get("key_levels", [])
+    tailwinds = profile.get("tailwinds", [])
+    headwinds = profile.get("headwinds", [])
+    time_notes = profile.get("time_notes", [])
+    what_to_watch = profile.get("what_to_watch", [])
+
+    # Color for bias
+    if bias == "BULLISH":
+        bias_color = "#22c55e" if bias_strength == "STRONG" else "#84cc16"
+        bias_icon = "▲"
+    elif bias == "BEARISH":
+        bias_color = "#ef4444" if bias_strength == "STRONG" else "#f97316"
+        bias_icon = "▼"
+    else:
+        bias_color = "#94a3b8"
+        bias_icon = "◆"
+
+    # Header row: bias + strength
+    header_row = html.Div([
+        html.Span("PROFILE ANALYSIS",
+                  style={"fontSize": "0.65rem", "color": "var(--accent-purple)",
+                         "fontWeight": "700", "letterSpacing": "0.10em"}),
+        html.Div([
+            html.Span(bias_icon, style={"fontSize": "1.1rem", "color": bias_color,
+                                         "marginRight": "6px"}),
+            html.Span(bias, style={"fontSize": "1.0rem", "color": bias_color,
+                                    "fontWeight": "700", "letterSpacing": "0.04em"}),
+            html.Span(bias_strength,
+                      style={"fontSize": "0.68rem", "color": bias_color,
+                             "marginLeft": "6px",
+                             "padding": "1px 6px",
+                             "border": f"1px solid {bias_color}",
+                             "borderRadius": "4px",
+                             "fontWeight": "600"}),
+        ], style={"display": "flex", "alignItems": "center"}),
+    ], style={"display": "flex", "justifyContent": "space-between",
+              "alignItems": "center", "marginBottom": "8px"})
+
+    # Regime line
+    regime_block = html.Div(
+        regime_label,
+        style={"fontSize": "0.78rem", "color": "var(--text-secondary)",
+               "marginBottom": "8px", "lineHeight": "1.4"},
+    )
+
+    # Trade type
+    trade_type_block = html.Div([
+        html.Span("PLAYBOOK", style={"fontSize": "0.62rem",
+                                       "color": "var(--text-muted)",
+                                       "letterSpacing": "0.08em",
+                                       "marginRight": "6px"}),
+        html.Span(trade_type, style={"fontSize": "0.78rem",
+                                       "color": "#fbbf24",
+                                       "fontWeight": "600"}),
+    ], style={"marginBottom": "10px",
+              "padding": "6px 10px",
+              "backgroundColor": "rgba(251,191,36,0.08)",
+              "borderRadius": "6px",
+              "borderLeft": "3px solid #fbbf24"})
+
+    # Key levels
+    def _level_row(lvl):
+        label, price, desc, dist = lvl
+        # Color the distance: above spot = green, below = red, at = grey
+        if abs(dist) < 0.05:
+            dist_color = "#94a3b8"
+        elif dist > 0:
+            dist_color = "#66bb6a"
+        else:
+            dist_color = "#ef5350"
+        return html.Div([
+            html.Span(label, style={"flex": 1.4,
+                                     "fontSize": "0.75rem",
+                                     "color": "var(--text-primary)",
+                                     "fontWeight": "500"}),
+            html.Span(f"${price:,.2f}",
+                      style={"flex": 0.8,
+                             "fontSize": "0.78rem",
+                             "color": "var(--text-primary)",
+                             "fontFamily": "monospace",
+                             "fontWeight": "600",
+                             "textAlign": "right"}),
+            html.Span(f"{dist:+.2f}%",
+                      style={"flex": 0.6,
+                             "fontSize": "0.72rem",
+                             "color": dist_color,
+                             "fontFamily": "monospace",
+                             "textAlign": "right",
+                             "marginLeft": "6px"}),
+        ], style={"display": "flex", "alignItems": "center",
+                  "padding": "3px 0",
+                  "borderBottom": "1px solid rgba(255,255,255,0.04)"})
+
+    levels_block = None
+    if key_levels:
+        levels_block = html.Div([
+            html.Div("KEY LEVELS",
+                     style={"fontSize": "0.62rem",
+                            "color": "var(--text-muted)",
+                            "letterSpacing": "0.08em",
+                            "marginBottom": "4px"}),
+            html.Div([_level_row(lvl) for lvl in key_levels[:7]]),
+        ], style={"marginBottom": "10px"})
+
+    # Tailwinds & Headwinds — two columns
+    def _bullet_list(items, accent_color):
+        if not items:
+            return html.Div("None significant",
+                            style={"fontSize": "0.72rem",
+                                   "color": "var(--text-muted)",
+                                   "fontStyle": "italic"})
+        return html.Ul([html.Li(t, style={"marginBottom": "3px",
+                                            "color": "var(--text-secondary)"})
+                        for t in items[:5]],
+                       style={"margin": 0, "paddingLeft": "16px",
+                              "fontSize": "0.74rem"})
+
+    tail_head_block = html.Div([
+        html.Div([
+            html.Div("TAILWINDS",
+                     style={"fontSize": "0.62rem",
+                            "color": "#66bb6a",
+                            "letterSpacing": "0.08em",
+                            "marginBottom": "4px"}),
+            _bullet_list(tailwinds, "#66bb6a"),
+        ], style={"flex": 1, "paddingRight": "10px"}),
+        html.Div([
+            html.Div("HEADWINDS",
+                     style={"fontSize": "0.62rem",
+                            "color": "#ef5350",
+                            "letterSpacing": "0.08em",
+                            "marginBottom": "4px"}),
+            _bullet_list(headwinds, "#ef5350"),
+        ], style={"flex": 1,
+                  "paddingLeft": "10px",
+                  "borderLeft": "1px solid rgba(255,255,255,0.06)"}),
+    ], style={"display": "flex", "marginBottom": "10px"})
+
+    # Time notes (only if present)
+    time_block = None
+    if time_notes:
+        time_block = html.Div([
+            html.Div("TIME OF DAY",
+                     style={"fontSize": "0.62rem",
+                            "color": "var(--accent-orange)",
+                            "letterSpacing": "0.08em",
+                            "marginBottom": "4px"}),
+            html.Ul([html.Li(t, style={"marginBottom": "3px",
+                                         "color": "var(--text-secondary)"})
+                     for t in time_notes],
+                    style={"margin": 0, "paddingLeft": "16px",
+                           "fontSize": "0.74rem"}),
+        ], style={"marginBottom": "10px"})
+
+    # What to watch
+    watch_block = None
+    if what_to_watch:
+        watch_block = html.Div([
+            html.Div("WHAT WOULD CHANGE THE READ",
+                     style={"fontSize": "0.62rem",
+                            "color": "var(--accent-yellow)",
+                            "letterSpacing": "0.08em",
+                            "marginBottom": "4px"}),
+            html.Ul([html.Li(t, style={"marginBottom": "3px",
+                                         "color": "var(--text-secondary)"})
+                     for t in what_to_watch[:5]],
+                    style={"margin": 0, "paddingLeft": "16px",
+                           "fontSize": "0.74rem"}),
+        ])
+
+    children = [header_row, regime_block, trade_type_block]
+    if levels_block:
+        children.append(levels_block)
+    children.append(tail_head_block)
+    if time_block:
+        children.append(time_block)
+    if watch_block:
+        children.append(watch_block)
+
+    return html.Div(children)
 
 
 def _build_metrics_header(ticker, spot, session, live, prev_hl, dte, updated,
@@ -3258,4 +4037,5 @@ if __name__ == "__main__":
     matrix_data.init_matrix_manager(use_mock=True)
     cot_scraper.init_cot_manager()
     market_state.init_market_state_manager(use_mock=True)
+    heatmap_data.init_heatmap_manager(use_mock=True)
     app.run(debug=True, host="0.0.0.0", port=8050)

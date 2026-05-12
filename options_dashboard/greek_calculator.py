@@ -944,85 +944,187 @@ def compute_trade_signal(spot, regime, vanna_vix, charm_clock, skew, term,
     tp2 = None
     caveats = []
 
+    # Constants for setup geometry
+    MIN_RR              = 1.5         # Below this R:R, the trade isn't worth taking
+    MAX_STOP_PCT        = 0.006       # Stop can't be wider than 0.6% from entry
+    MIN_STOP_PCT        = 0.0015      # Stop can't be tighter than 0.15% (noise)
+    WALL_TOO_FAR_PCT    = 0.012       # If wall is >1.2% from spot, don't wait for it
+    EM_BUFFER_PCT       = 0.005       # Targets capped 0.5% beyond EM boundary
+    ATM_IV              = live_metrics.get("atm_iv", 0.20) if live_metrics else 0.20
+
+    # Helper: EM range bounds for target capping
+    em_long_max  = straddle_em_high * (1 + EM_BUFFER_PCT)
+    em_short_min = straddle_em_low  * (1 - EM_BUFFER_PCT)
+
     if direction == "LONG":
-        # Entry priority: pullback to support (put wall > flip > current)
-        if gamma_sign == "POSITIVE" and above_flip:
-            # Mean-reverting: buy dips to put wall / flip
-            if put_wall and put_wall < spot:
-                entry = put_wall
-                setup = f"Fade dip to put wall (${put_wall:,.1f}) in positive γ"
-            elif gex_flip and gex_flip < spot:
-                entry = gex_flip
-                setup = f"Fade dip to GEX flip (${gex_flip:,.1f})"
-            else:
-                entry = spot
-                setup = "Mean-reversion long at current level"
-        else:
-            # Breakout continuation in negative γ
-            if call_wall and call_wall > spot:
-                entry = call_wall
-                setup = f"Breakout above call wall (${call_wall:,.1f})"
-            else:
-                entry = spot
-                setup = "Momentum long at current level"
-
-        # Stop: below the key support
+        # ── ENTRY ──
+        # Prefer entry at support (put wall or flip) IF it's reachable.
+        # Don't quote entries at unreachable levels.
+        nearest_support = None
         if put_wall and put_wall < spot:
-            stop_loss = put_wall * 0.997   # just below
-        elif gex_flip and gex_flip < spot:
-            stop_loss = gex_flip * 0.997
-        else:
-            stop_loss = min(straddle_em_low, spot * 0.995)
+            if (spot - put_wall) / spot <= WALL_TOO_FAR_PCT:
+                nearest_support = put_wall
+                entry = put_wall
+                setup = f"Fade dip to put wall (${put_wall:,.2f}) in positive γ"
+        if entry is None and gex_flip and gex_flip < spot:
+            if (spot - gex_flip) / spot <= WALL_TOO_FAR_PCT:
+                nearest_support = gex_flip
+                entry = gex_flip
+                setup = f"Fade dip to GEX flip (${gex_flip:,.2f})"
 
-        # Targets: EM high → next wall
-        tp1 = straddle_em_high
-        if call_wall and call_wall > spot and call_wall > tp1:
-            tp2 = call_wall
+        # Negative γ regime → momentum / breakout setup
+        if entry is None and gamma_sign == "NEGATIVE":
+            if call_wall and call_wall > spot and (call_wall - spot) / spot <= WALL_TOO_FAR_PCT:
+                entry = call_wall
+                setup = f"Breakout above call wall (${call_wall:,.2f})"
+            else:
+                entry = spot
+                setup = "Momentum long at market"
+
+        # Default: enter at market
+        if entry is None:
+            entry = spot
+            setup = "Long at market (no clean entry zone nearby)"
+
+        # ── STOP ──
+        # Stop just below the most relevant support (wall or flip).
+        # Validate it's within reasonable distance from entry.
+        if nearest_support:
+            raw_stop = nearest_support * 0.997
+        elif put_wall and put_wall < entry:
+            raw_stop = put_wall * 0.997
+        elif gex_flip and gex_flip < entry:
+            raw_stop = gex_flip * 0.997
         else:
-            tp2 = spot + (spot - stop_loss) * 3.0
+            # No clean structural stop — use a fixed % below entry
+            raw_stop = entry * (1 - MAX_STOP_PCT * 0.7)
+
+        # Clamp stop distance: not too wide, not too tight
+        max_stop = entry * (1 - MIN_STOP_PCT)
+        min_stop = entry * (1 - MAX_STOP_PCT)
+        stop_loss = max(raw_stop, min_stop)
+        stop_loss = min(stop_loss, max_stop)
+
+        risk = entry - stop_loss
+
+        # ── TARGETS ──
+        # TP1: nearest of (call_wall above entry, EM high). Must give ≥ MIN_RR.
+        candidates_tp1 = []
+        if call_wall and call_wall > entry:
+            candidates_tp1.append(("call wall", call_wall))
+        if straddle_em_high > entry:
+            candidates_tp1.append(("EM high", straddle_em_high))
+
+        # Pick smallest valid candidate that gives MIN_RR
+        tp1 = None
+        for label_, lvl in sorted(candidates_tp1, key=lambda x: x[1]):
+            reward = lvl - entry
+            if reward / risk >= MIN_RR:
+                tp1 = lvl
+                break
+
+        # If no candidate works, set TP1 at MIN_RR distance — but cap at EM
+        if tp1 is None:
+            tp1 = min(entry + risk * MIN_RR, em_long_max)
+
+        # TP2: next wall beyond TP1, or EM-capped 3R
+        if call_wall and call_wall > tp1:
+            tp2_raw = call_wall
+        else:
+            tp2_raw = entry + risk * 3.0
+        # Cap at EM boundary
+        tp2 = min(tp2_raw, em_long_max)
 
     elif direction == "SHORT":
-        # Entry priority: rally to resistance (call wall > flip > current)
-        if gamma_sign == "POSITIVE" and not above_flip:
-            if call_wall and call_wall > spot:
-                entry = call_wall
-                setup = f"Fade rally into call wall (${call_wall:,.1f}) below flip"
-            elif gex_flip and gex_flip > spot:
-                entry = gex_flip
-                setup = f"Fade rally into GEX flip (${gex_flip:,.1f})"
-            else:
-                entry = spot
-                setup = "Mean-reversion short at current level"
-        else:
-            # Breakdown in negative γ
-            if put_wall and put_wall < spot:
-                entry = put_wall
-                setup = f"Breakdown below put wall (${put_wall:,.1f})"
-            else:
-                entry = spot
-                setup = "Momentum short at current level"
-
+        # ── ENTRY ──
+        nearest_resistance = None
         if call_wall and call_wall > spot:
-            stop_loss = call_wall * 1.003
-        elif gex_flip and gex_flip > spot:
-            stop_loss = gex_flip * 1.003
-        else:
-            stop_loss = max(straddle_em_high, spot * 1.005)
+            if (call_wall - spot) / spot <= WALL_TOO_FAR_PCT:
+                nearest_resistance = call_wall
+                entry = call_wall
+                setup = f"Fade rally into call wall (${call_wall:,.2f})"
+        if entry is None and gex_flip and gex_flip > spot:
+            if (gex_flip - spot) / spot <= WALL_TOO_FAR_PCT:
+                nearest_resistance = gex_flip
+                entry = gex_flip
+                setup = f"Fade rally into GEX flip (${gex_flip:,.2f})"
 
-        tp1 = straddle_em_low
-        if put_wall and put_wall < spot and put_wall < tp1:
-            tp2 = put_wall
+        if entry is None and gamma_sign == "NEGATIVE":
+            if put_wall and put_wall < spot and (spot - put_wall) / spot <= WALL_TOO_FAR_PCT:
+                entry = put_wall
+                setup = f"Breakdown below put wall (${put_wall:,.2f})"
+            else:
+                entry = spot
+                setup = "Momentum short at market"
+
+        if entry is None:
+            entry = spot
+            setup = "Short at market (no clean entry zone nearby)"
+
+        # ── STOP ──
+        if nearest_resistance:
+            raw_stop = nearest_resistance * 1.003
+        elif call_wall and call_wall > entry:
+            raw_stop = call_wall * 1.003
+        elif gex_flip and gex_flip > entry:
+            raw_stop = gex_flip * 1.003
         else:
-            tp2 = spot - (stop_loss - spot) * 3.0
+            raw_stop = entry * (1 + MAX_STOP_PCT * 0.7)
+
+        # Clamp stop
+        min_stop = entry * (1 + MIN_STOP_PCT)
+        max_stop = entry * (1 + MAX_STOP_PCT)
+        stop_loss = min(raw_stop, max_stop)
+        stop_loss = max(stop_loss, min_stop)
+
+        risk = stop_loss - entry
+
+        # ── TARGETS ──
+        candidates_tp1 = []
+        if put_wall and put_wall < entry:
+            candidates_tp1.append(("put wall", put_wall))
+        if straddle_em_low < entry:
+            candidates_tp1.append(("EM low", straddle_em_low))
+
+        tp1 = None
+        for label_, lvl in sorted(candidates_tp1, key=lambda x: -x[1]):
+            reward = entry - lvl
+            if reward / risk >= MIN_RR:
+                tp1 = lvl
+                break
+
+        if tp1 is None:
+            tp1 = max(entry - risk * MIN_RR, em_short_min)
+
+        if put_wall and put_wall < tp1:
+            tp2_raw = put_wall
+        else:
+            tp2_raw = entry - risk * 3.0
+        tp2 = max(tp2_raw, em_short_min)
 
     else:
         setup = "No clear setup — signals conflicting or weak"
 
-    # ── Risk/reward ─────────────────────────────────────────────────
+    # ── Risk/reward + tradeability check ─────────────────────────────
     if entry and stop_loss and tp1:
-        risk = abs(entry - stop_loss)
-        reward = abs(tp1 - entry)
-        risk_reward = reward / risk if risk > 0 else 0
+        risk_dollars = abs(entry - stop_loss)
+        reward_dollars = abs(tp1 - entry)
+        risk_reward = reward_dollars / risk_dollars if risk_dollars > 0 else 0
+
+        # If the resulting R:R is below MIN_RR after all clamping,
+        # the geometry doesn't support a directional trade.
+        # Force NEUTRAL with explanation.
+        if risk_reward < MIN_RR and direction != "NEUTRAL":
+            caveats.append(
+                f"Setup geometry only offers {risk_reward:.2f}:1 R:R — "
+                f"below the {MIN_RR}:1 minimum. Stand aside."
+            )
+            direction = "NEUTRAL"
+            conviction = "NONE"
+            setup = (f"Geometry unfavorable: walls/EM don't support a "
+                      f"{direction} setup with adequate R:R from current spot")
+            entry = stop_loss = tp1 = tp2 = None
+            risk_reward = 0
     else:
         risk_reward = 0
 
@@ -1079,6 +1181,336 @@ def _empty_signal(msg):
         "entry": None, "stop_loss": None, "take_profit_1": None,
         "take_profit_2": None, "risk_reward": 0,
         "reasoning": [], "caveats": [], "score": 0,
+    }
+
+
+# ── Greek Profile Analyzer ──────────────────────────────────────────────────
+
+def compute_profile_analysis(spot, regime, vanna_vix, charm_clock, skew, term,
+                              iv_rank, pinning, live_metrics, exp_df,
+                              prev_day_hl=None, session_metrics=None):
+    """
+    Produces a structured read of the current options profile — what the
+    greek landscape is telling you about probable behavior, key levels,
+    appropriate trade type, and risks. This is a profile read, not a trade
+    recommendation. Computes everything from current state (no LLM).
+
+    Returns dict:
+      bias:              "BULLISH" | "BEARISH" | "BALANCED"
+      bias_strength:     "STRONG" | "MODERATE" | "WEAK"
+      regime_label:      one-line description of the gamma regime
+      trade_type:        recommended trade type for current conditions
+      key_levels:        list of (label, price, type) tuples
+      tailwinds:         list of bullet strings (factors helping the bias)
+      headwinds:         list of bullet strings (factors against the bias)
+      time_notes:        time-of-day / DTE-specific commentary
+      what_to_watch:     conditions that would change the read
+      summary:           one-paragraph plain-language summary
+    """
+    if not regime or exp_df is None or exp_df.empty:
+        return {
+            "bias": "BALANCED", "bias_strength": "WEAK",
+            "regime_label": "Insufficient data",
+            "trade_type": "STAND ASIDE",
+            "key_levels": [], "tailwinds": [],
+            "headwinds": ["No options data available"],
+            "time_notes": [], "what_to_watch": [],
+            "summary": "Profile analysis unavailable — waiting for chain data.",
+        }
+
+    gamma_sign = regime.get("gamma", "NEUTRAL")
+    gex_flip   = regime.get("gex_flip")
+    call_wall  = regime.get("call_wall")
+    put_wall   = regime.get("put_wall")
+    above_flip = regime.get("above_flip")
+    total_gex  = regime.get("total_gex", 0)
+
+    atm_iv = live_metrics.get("atm_iv", 0) if live_metrics else 0
+    pc_ratio = live_metrics.get("pc_ratio", 1) if live_metrics else 1
+    em_high = live_metrics.get("straddle_em_high", spot) if live_metrics else spot
+    em_low  = live_metrics.get("straddle_em_low",  spot) if live_metrics else spot
+
+    # ── Bias scoring (quick weighted vote) ───────────────────────────
+    bias_score = 0
+    if gamma_sign == "POSITIVE":
+        if above_flip is True:
+            bias_score += 1.5    # mean-reverting to upside
+        elif above_flip is False:
+            bias_score -= 1.5    # mean-reverting to downside
+    elif gamma_sign == "NEGATIVE":
+        if above_flip is True:
+            bias_score += 1.0    # breakout continuation up
+        elif above_flip is False:
+            bias_score -= 2.0    # crash-prone
+
+    if vanna_vix:
+        sig = vanna_vix.get("signal", "MIXED")
+        if sig == "BULLISH":
+            bias_score += 1.5
+        elif sig == "BEARISH":
+            bias_score -= 1.5
+
+    if charm_clock:
+        d = charm_clock.get("direction", "NEUTRAL")
+        if d == "SUPPORTIVE":
+            bias_score += 0.7
+        elif d == "PRESSURING":
+            bias_score -= 0.7
+
+    if "dex_exp" in exp_df.columns:
+        net_dex = float(exp_df["dex_exp"].sum())
+        if abs(net_dex) > spot * 50:
+            bias_score += 0.5 if net_dex > 0 else -0.5
+
+    if skew:
+        sk_val = skew.get("skew", 0) * 100
+        if sk_val > 4:
+            bias_score -= 0.4    # heavy put demand = bearish positioning
+        elif sk_val < -1:
+            bias_score += 0.3    # rare call skew = bullish
+
+    if term and term.get("state") == "BACKWARDATION":
+        bias_score -= 0.4
+
+    # Convert bias_score to label
+    if bias_score >= 1.5:
+        bias = "BULLISH"
+        bias_strength = "STRONG" if bias_score >= 3.0 else "MODERATE"
+    elif bias_score <= -1.5:
+        bias = "BEARISH"
+        bias_strength = "STRONG" if bias_score <= -3.0 else "MODERATE"
+    elif abs(bias_score) >= 0.7:
+        bias = "BULLISH" if bias_score > 0 else "BEARISH"
+        bias_strength = "WEAK"
+    else:
+        bias = "BALANCED"
+        bias_strength = "WEAK"
+
+    # ── Regime label ─────────────────────────────────────────────────
+    flip_pos = ""
+    if gex_flip and spot:
+        dist_pct = (spot - gex_flip) / spot * 100
+        flip_pos = (f"+{dist_pct:.2f}%" if dist_pct > 0 else f"{dist_pct:.2f}%")
+
+    if gamma_sign == "POSITIVE":
+        if above_flip:
+            regime_label = (f"Positive γ above flip ({flip_pos}) — "
+                             f"dealer hedging is mean-reverting, "
+                             f"expect grind/range")
+        else:
+            regime_label = (f"Positive γ below flip ({flip_pos}) — "
+                             f"resistance overhead, mean-reversion DOWN")
+    elif gamma_sign == "NEGATIVE":
+        if above_flip:
+            regime_label = (f"Negative γ above flip ({flip_pos}) — "
+                             f"trend-continuation, breakouts hold")
+        else:
+            regime_label = (f"Negative γ below flip ({flip_pos}) — "
+                             f"acceleration risk, gamma crash setup")
+    else:
+        regime_label = "Neutral γ — no clear dealer-flow regime"
+
+    # ── Trade type recommendation ────────────────────────────────────
+    trade_type = ""
+    if gamma_sign == "POSITIVE":
+        if pinning and pinning.get("confidence") in ("HIGH", "MEDIUM"):
+            trade_type = "RANGE / PIN-TRADE — fade extremes near pin strike"
+        else:
+            trade_type = "MEAN-REVERSION — fade moves into walls, scalps"
+    elif gamma_sign == "NEGATIVE":
+        trade_type = "MOMENTUM / BREAKOUT — trend-trade, wider stops, faster targets"
+    else:
+        trade_type = "WAIT — no edge, choppy conditions"
+
+    if iv_rank and iv_rank.get("iv_rank") is not None:
+        rank = iv_rank["iv_rank"]
+        if rank >= 75:
+            trade_type += "  •  IV expensive → consider spreads, sell premium"
+        elif rank <= 25:
+            trade_type += "  •  IV cheap → favor long options, debit structures"
+
+    # ── Key levels ───────────────────────────────────────────────────
+    key_levels = []
+    if call_wall:
+        dist = (call_wall - spot) / spot * 100 if spot > 0 else 0
+        key_levels.append(("Call Wall (resistance)", call_wall,
+                            "ceiling — heavy gamma above forces dealer selling",
+                            dist))
+    if put_wall:
+        dist = (put_wall - spot) / spot * 100 if spot > 0 else 0
+        key_levels.append(("Put Wall (support)", put_wall,
+                            "floor — heavy gamma below forces dealer buying",
+                            dist))
+    if gex_flip:
+        dist = (gex_flip - spot) / spot * 100 if spot > 0 else 0
+        key_levels.append(("GEX Flip", gex_flip,
+                            "regime line — crossing changes dealer behavior",
+                            dist))
+    if pinning and pinning.get("pin_strike") and pinning.get("confidence") != "NONE":
+        ps = pinning["pin_strike"]
+        dist = (ps - spot) / spot * 100 if spot > 0 else 0
+        conf = pinning.get("confidence", "LOW")
+        key_levels.append((f"Pin Magnet ({conf})", ps,
+                            "expect drift toward this strike into close",
+                            dist))
+    if em_high and em_high != spot:
+        dist = (em_high - spot) / spot * 100 if spot > 0 else 0
+        key_levels.append(("EM High (1σ)", em_high,
+                            "implied 1σ upside — beyond is a vol surprise",
+                            dist))
+    if em_low and em_low != spot:
+        dist = (em_low - spot) / spot * 100 if spot > 0 else 0
+        key_levels.append(("EM Low (1σ)", em_low,
+                            "implied 1σ downside — beyond is a vol surprise",
+                            dist))
+    if prev_day_hl:
+        ph = prev_day_hl.get("high")
+        pl = prev_day_hl.get("low")
+        if ph:
+            dist = (ph - spot) / spot * 100 if spot > 0 else 0
+            key_levels.append(("Prev Day High", ph,
+                                "yesterday's high — common reversal area",
+                                dist))
+        if pl:
+            dist = (pl - spot) / spot * 100 if spot > 0 else 0
+            key_levels.append(("Prev Day Low", pl,
+                                "yesterday's low — common reversal area",
+                                dist))
+
+    # Sort key levels by absolute distance from spot
+    key_levels.sort(key=lambda x: abs(x[3]))
+
+    # ── Tailwinds (factors supporting the bias) ──────────────────────
+    tailwinds = []
+    headwinds = []
+
+    if bias == "BULLISH":
+        if gamma_sign == "POSITIVE" and above_flip:
+            tailwinds.append("Positive γ above flip — dealers buy dips")
+        if gamma_sign == "NEGATIVE" and above_flip:
+            tailwinds.append("Negative γ above flip — breakouts extend")
+        if vanna_vix and vanna_vix.get("signal") == "BULLISH":
+            tailwinds.append("Vanna/VIX BULLISH — vol decline supports buying")
+        if charm_clock and charm_clock.get("direction") == "SUPPORTIVE":
+            hr = charm_clock.get("hours_to_close", 0)
+            tailwinds.append(f"Charm SUPPORTIVE — decay flows lift price ({hr:.1f}h to close)")
+        if pc_ratio < 0.85:
+            tailwinds.append(f"P/C ratio {pc_ratio:.2f} — call-heavy, bullish positioning")
+        if iv_rank and iv_rank.get("iv_rank") is not None and iv_rank["iv_rank"] <= 30:
+            tailwinds.append(f"IV Rank {iv_rank['iv_rank']:.0f} — cheap vol, room to expand")
+    elif bias == "BEARISH":
+        if gamma_sign == "POSITIVE" and not above_flip:
+            tailwinds.append("Positive γ below flip — overhead resistance heavy")
+        if gamma_sign == "NEGATIVE" and not above_flip:
+            tailwinds.append("Negative γ below flip — DOWNSIDE acceleration risk")
+        if vanna_vix and vanna_vix.get("signal") == "BEARISH":
+            tailwinds.append("Vanna/VIX BEARISH — rising vol forces selling")
+        if charm_clock and charm_clock.get("direction") == "PRESSURING":
+            hr = charm_clock.get("hours_to_close", 0)
+            tailwinds.append(f"Charm PRESSURING — decay flows weigh on price ({hr:.1f}h to close)")
+        if pc_ratio > 1.15:
+            tailwinds.append(f"P/C ratio {pc_ratio:.2f} — put-heavy, bearish positioning")
+        if skew and skew.get("skew", 0) * 100 > 4:
+            tailwinds.append(f"Skew steep — elevated downside hedging demand")
+        if term and term.get("state") == "BACKWARDATION":
+            tailwinds.append("Term BACKWARDATION — front-month stress priced")
+    else:
+        tailwinds.append("Mixed signals — no directional edge to lean on")
+
+    # ── Headwinds (against the bias) ─────────────────────────────────
+    if bias == "BULLISH":
+        if call_wall and (call_wall - spot) / spot < 0.005:
+            headwinds.append(f"Spot near call wall (${call_wall:,.2f}) — dealer selling pressure imminent")
+        if iv_rank and iv_rank.get("iv_rank") is not None and iv_rank["iv_rank"] >= 75:
+            headwinds.append(f"IV Rank {iv_rank['iv_rank']:.0f} — premium expensive, options costly")
+        if vanna_vix and vanna_vix.get("signal") == "BEARISH":
+            headwinds.append("Vanna/VIX BEARISH — vol flow opposes bullish thesis")
+    elif bias == "BEARISH":
+        if put_wall and (spot - put_wall) / spot < 0.005:
+            headwinds.append(f"Spot near put wall (${put_wall:,.2f}) — dealer buying support imminent")
+        if vanna_vix and vanna_vix.get("signal") == "BULLISH":
+            headwinds.append("Vanna/VIX BULLISH — vol flow opposes bearish thesis")
+
+    if gamma_sign == "NEGATIVE":
+        headwinds.append("Negative γ regime — wider noise, false signals more likely")
+
+    if pinning and pinning.get("confidence") == "HIGH":
+        ps = pinning.get("pin_strike", spot)
+        if ps != spot:
+            headwinds.append(f"Strong pin to ${ps:,.2f} — magnet effect can override directional thesis")
+
+    # ── Time-of-day notes ────────────────────────────────────────────
+    time_notes = []
+    if charm_clock:
+        hr = charm_clock.get("hours_to_close", 0)
+        if hr <= 1.0:
+            time_notes.append("FINAL HOUR — charm flows accelerate, pin pressure peaks")
+        elif hr <= 2.0:
+            time_notes.append("Last 2 hours — charm decay strongest, watch for trend exhaustion")
+        elif hr >= 5.0:
+            time_notes.append("Early session — directional moves more reliable, charm minimal")
+
+    if pinning and pinning.get("confidence") in ("HIGH", "MEDIUM"):
+        ps = pinning.get("pin_strike")
+        if ps:
+            time_notes.append(f"Pin magnet @ ${ps:,.2f} strengthens into expiry — fade moves away")
+
+    if iv_rank and iv_rank.get("iv_rank") is not None:
+        rank = iv_rank["iv_rank"]
+        if rank >= 80:
+            time_notes.append(f"IV Rank {rank:.0f} — vol crush risk if no event materializes")
+        elif rank <= 20:
+            time_notes.append(f"IV Rank {rank:.0f} — vol expansion possible, long premium asymmetric")
+
+    # ── What to watch (invalidation conditions) ──────────────────────
+    what_to_watch = []
+    if gex_flip:
+        if above_flip:
+            what_to_watch.append(f"Spot closing below GEX flip (${gex_flip:,.2f}) flips regime")
+        else:
+            what_to_watch.append(f"Spot closing above GEX flip (${gex_flip:,.2f}) flips regime")
+    if call_wall:
+        what_to_watch.append(f"Break above call wall (${call_wall:,.2f}) → trend extension or vol expansion")
+    if put_wall:
+        what_to_watch.append(f"Break below put wall (${put_wall:,.2f}) → cascade-risk in negative γ")
+    if vanna_vix:
+        vx = vanna_vix.get("vix_current", 0)
+        if vx > 0:
+            what_to_watch.append(f"VIX move > 1pt — flips Vanna/VIX signal regime")
+
+    # ── Summary paragraph ────────────────────────────────────────────
+    bias_phrase = {
+        ("BULLISH", "STRONG"):    "Strongly bullish",
+        ("BULLISH", "MODERATE"):  "Moderately bullish",
+        ("BULLISH", "WEAK"):      "Slight bullish lean",
+        ("BEARISH", "STRONG"):    "Strongly bearish",
+        ("BEARISH", "MODERATE"):  "Moderately bearish",
+        ("BEARISH", "WEAK"):      "Slight bearish lean",
+        ("BALANCED", "WEAK"):     "Balanced / no edge",
+    }.get((bias, bias_strength), "Mixed")
+
+    parts = [f"{bias_phrase}."]
+    parts.append(regime_label.split(" — ")[0] + " regime.")
+    if call_wall and put_wall:
+        parts.append(f"Range bounded ${put_wall:,.2f} - ${call_wall:,.2f}.")
+    if pinning and pinning.get("confidence") in ("HIGH", "MEDIUM"):
+        parts.append(f"Pin pressure to ${pinning['pin_strike']:,.2f}.")
+    parts.append(trade_type.split("  •  ")[0] + ".")
+
+    summary = " ".join(parts)
+
+    return {
+        "bias":           bias,
+        "bias_strength":  bias_strength,
+        "bias_score":     round(bias_score, 2),
+        "regime_label":   regime_label,
+        "trade_type":     trade_type,
+        "key_levels":     key_levels,
+        "tailwinds":      tailwinds,
+        "headwinds":      headwinds,
+        "time_notes":     time_notes,
+        "what_to_watch":  what_to_watch,
+        "summary":        summary,
     }
 
 

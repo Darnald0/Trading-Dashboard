@@ -1,17 +1,17 @@
 {
   "SPX": {
     "latest_date": "2026-04-08",
-    "latest_spot": 7200.75,
-    "latest_iv": 0.2,
+    "latest_spot": 7387.6,
+    "latest_iv": 0.06730483537397298,
     "prev_close_date": "2026-04-08",
-    "prev_close_spot": 7230.12,
-    "prev_close_iv": 0.19397853853583788,
+    "prev_close_spot": 7412.84,
+    "prev_close_iv": 1.349068034664444,
     "weekly_close_date": "2026-04-08",
-    "weekly_close_spot": 7230.12,
-    "weekly_close_iv": 0.19397853853583788,
-    "latest_timestamp": "2026-05-04 23:44:35",
-    "prev_close_timestamp": "2026-05-01 22:03:47",
-    "weekly_close_timestamp": "2026-05-01 22:03:47",
+    "weekly_close_spot": 7398.93,
+    "weekly_close_iv": 0.6311267330152861,
+    "latest_timestamp": "2026-05-12 21:21:56",
+    "prev_close_timestamp": "2026-05-11 22:16:01",
+    "weekly_close_timestamp": "2026-05-08 22:32:56",
     "iv_history": [
       {
         "date": "2026-04-22",
@@ -48,6 +48,30 @@
       {
         "date": "2026-05-04",
         "iv": 0.2
+      },
+      {
+        "date": "2026-05-05",
+        "iv": 0.9743754155061518
+      },
+      {
+        "date": "2026-05-06",
+        "iv": 0.507650265918057
+      },
+      {
+        "date": "2026-05-07",
+        "iv": 0.227094784733723
+      },
+      {
+        "date": "2026-05-08",
+        "iv": 0.6311267330152861
+      },
+      {
+        "date": "2026-05-11",
+        "iv": 1.349068034664444
+      },
+      {
+        "date": "2026-05-12",
+        "iv": 0.06730483537397298
       }
     ]
   },

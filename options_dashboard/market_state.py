@@ -141,33 +141,6 @@ def _volume_flow_to_score(flow_ratio: float) -> float:
     return 50.0 + 50.0 * flow
 
 
-def _trend_alignment_score(spot: float, sma20: float, sma50: float,
-                            sma200: float) -> float:
-    """
-    How aligned is price with its moving averages?
-    Bull stack (price > 20 > 50 > 200)   → 100
-    Bear stack (price < 20 < 50 < 200)   → 0
-    Mixed alignments → in between, weighted by which MAs are above.
-    """
-    if spot <= 0:
-        return 50.0
-    above_20 = sma20 > 0 and spot > sma20
-    above_50 = sma50 > 0 and spot > sma50
-    above_200 = sma200 > 0 and spot > sma200
-    # Weighted: 50 base + each MA adds/subtracts proportional to importance
-    score = 50.0
-    score += 12.0 if above_20 else -12.0
-    score += 16.0 if above_50 else -16.0
-    score += 22.0 if above_200 else -22.0   # 200MA most important
-    # Bonus for full alignment (bull/bear stack)
-    if sma20 > 0 and sma50 > 0 and sma200 > 0:
-        if sma20 > sma50 > sma200 and above_20:
-            score = min(100, score + 5)
-        elif sma20 < sma50 < sma200 and not above_20:
-            score = max(0, score - 5)
-    return max(0.0, min(100.0, score))
-
-
 def _volume_quality_score(today_vol: float, avg_vol: float,
                            pct_change: float) -> float:
     """
@@ -196,20 +169,18 @@ def _volume_quality_score(today_vol: float, avg_vol: float,
 
 
 def _bullishness_score(pct_change: float, flow_ratio: float,
-                       trend: float, vol_qual: float) -> float:
+                       vol_qual: float) -> float:
     """
     Composite bullishness score (0-100), weighted blend:
-      37.5%  daily price change         (today's price action)
-      32.5%  intraday volume flow       (buy vs sell pressure)
-      20%    trend alignment            (price vs MAs — context)
-      10%    volume quality             (conviction of the move)
+      44.17%  daily price change         (today's price action)
+      39.17%  intraday volume flow       (buy vs sell pressure)
+      16.67%  volume quality             (conviction of the move)
     """
     day = _daily_change_to_score(pct_change)
     flow = _volume_flow_to_score(flow_ratio)
-    return (0.375 * day +
-            0.325 * flow +
-            0.200 * trend +
-            0.100 * vol_qual)
+    return (0.4417 * day +
+            0.3917 * flow +
+            0.1667 * vol_qual)
 
 
 def _classify(score: float) -> str:
@@ -245,22 +216,8 @@ def _build_composite_row(composite: dict, etf_rows: list) -> dict:
     pct_change = sum(by_ticker[t]["pct_change"] * w for t, w in norm_weights.items())
     flow_ratio = sum(by_ticker[t]["flow_ratio"] * w for t, w in norm_weights.items())
     score      = sum(by_ticker[t]["score"]      * w for t, w in norm_weights.items())
-    trend_score    = sum(by_ticker[t].get("trend_score", 50)    * w for t, w in norm_weights.items())
     vol_qual_score = sum(by_ticker[t].get("vol_qual_score", 50) * w for t, w in norm_weights.items())
     vol_ratio      = sum(by_ticker[t].get("vol_ratio", 1.0)     * w for t, w in norm_weights.items())
-
-    # MA stack — weighted vote: dot is "above" if >50% of weight is above its MA
-    above_20  = sum(w for t, w in norm_weights.items()
-                    if by_ticker[t].get("spot", 0) > by_ticker[t].get("sma20", 0))
-    above_50  = sum(w for t, w in norm_weights.items()
-                    if by_ticker[t].get("spot", 0) > by_ticker[t].get("sma50", 0))
-    above_200 = sum(w for t, w in norm_weights.items()
-                    if by_ticker[t].get("spot", 0) > by_ticker[t].get("sma200", 0))
-
-    # Synthesize MA flags using a fake spot of 100, with smaX = 99 if mostly above
-    sma20_synth  = 99 if above_20  >= 0.5 else 101
-    sma50_synth  = 99 if above_50  >= 0.5 else 101
-    sma200_synth = 99 if above_200 >= 0.5 else 101
 
     return {
         "ticker":         composite["ticker"],
@@ -269,11 +226,7 @@ def _build_composite_row(composite: dict, etf_rows: list) -> dict:
         "spot":           100,
         "pct_change":     round(pct_change, 2),
         "flow_ratio":     round(flow_ratio, 3),
-        "sma20":          sma20_synth,
-        "sma50":          sma50_synth,
-        "sma200":         sma200_synth,
         "vol_ratio":      round(vol_ratio, 2),
-        "trend_score":    round(trend_score, 1),
         "vol_qual_score": round(vol_qual_score, 1),
         "score":          round(score, 1),
         "label":          _classify(score),
@@ -324,50 +277,97 @@ class IBMarketStateFetcher:
             if contract.conId == 0:
                 return {"ticker": ticker, "error": "Unknown contract"}
 
-            self.ib.reqMarketDataType(4)
+            # Use real-time data when available, falling back to delayed if not.
+            # Type 1 = real-time (paid sub), 3 = delayed, 4 = frozen/last-known.
+            self.ib.reqMarketDataType(1)
 
-            # Fetch 1 year of daily bars (need 200 for the 200MA)
+            # Fetch 30 days of daily bars (need 20 for the volume average)
             daily_bars = self.ib.reqHistoricalData(
                 contract,
                 endDateTime="",
-                durationStr="1 Y",
+                durationStr="30 D",
                 barSizeSetting="1 day",
                 whatToShow="TRADES",
                 useRTH=True,
                 formatDate=1,
             )
-            if not daily_bars or len(daily_bars) < 21:
+            if not daily_bars or len(daily_bars) < 2:
                 return {"ticker": ticker, "error": "Not enough daily history"}
 
-            today_bar = daily_bars[-1]
-            prev_close = daily_bars[-2].close if len(daily_bars) >= 2 else today_bar.open
-            spot = today_bar.close
+            # ── Real-time spot price ──────────────────────────────────
+            # Daily bars during a live session are STALE — the last bar's
+            # close is updated periodically but lags real-time tape.
+            # Use reqMktData for the actual current price.
+            ticker_obj = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2.0)   # let snapshot populate
+
+            # Pick best available price: last > close > bid/ask mid > daily bar close
+            rt_last = ticker_obj.last if ticker_obj.last and not (
+                ticker_obj.last != ticker_obj.last) else 0
+            rt_close = ticker_obj.close if ticker_obj.close and not (
+                ticker_obj.close != ticker_obj.close) else 0
+            rt_bid = ticker_obj.bid if ticker_obj.bid and not (
+                ticker_obj.bid != ticker_obj.bid) else 0
+            rt_ask = ticker_obj.ask if ticker_obj.ask and not (
+                ticker_obj.ask != ticker_obj.ask) else 0
+
+            if rt_last and rt_last > 0:
+                spot = rt_last
+            elif rt_bid > 0 and rt_ask > 0:
+                spot = (rt_bid + rt_ask) / 2
+            elif rt_close and rt_close > 0:
+                spot = rt_close
+            else:
+                # Last resort: stale daily bar close
+                spot = daily_bars[-1].close
+
+            # Cancel the streaming subscription immediately
+            try:
+                self.ib.cancelMktData(contract)
+            except Exception:
+                pass
+
+            # ── Previous close for pct_change ─────────────────────────
+            # The daily bars list usually ends with TODAY's (still-forming) bar.
+            # Yesterday's close is at index [-2]. But if today's bar isn't
+            # there yet (early morning), [-1] is yesterday's close.
+            #
+            # Detect by comparing: if daily_bars[-1].date == today's date,
+            # then [-2] is yesterday's close. Otherwise [-1] is.
+            today_date = dt.date.today()
+            last_bar_date = daily_bars[-1].date
+            if hasattr(last_bar_date, "date"):
+                last_bar_date = last_bar_date.date()
+
+            if last_bar_date == today_date and len(daily_bars) >= 2:
+                # Today's bar is present → yesterday is at [-2]
+                prev_close = daily_bars[-2].close
+                today_bar = daily_bars[-1]
+            else:
+                # Today's bar not yet present → [-1] is yesterday's close
+                prev_close = daily_bars[-1].close
+                today_bar = daily_bars[-1]   # use as fallback for volume
+
             today_volume = today_bar.volume or 0
 
             if prev_close <= 0:
                 return {"ticker": ticker, "error": "Bad prev close"}
             pct_change = (spot - prev_close) / prev_close * 100
 
-            # Build closes & volumes lists (excluding today, so MAs are based on history)
-            historical_closes = [b.close for b in daily_bars[:-1] if b.close > 0]
-            historical_vols   = [b.volume or 0 for b in daily_bars[:-1]]
-
-            # Moving averages
-            def _sma(values, n):
-                if len(values) < n:
-                    return 0.0
-                return sum(values[-n:]) / n
-
-            sma20  = _sma(historical_closes, 20)
-            sma50  = _sma(historical_closes, 50)
-            sma200 = _sma(historical_closes, 200)
+            # Build closes & volumes lists for moving averages.
+            # If today's bar is in the list, exclude it (use history through yesterday).
+            # If it's not (pre-market), use everything.
+            if last_bar_date == today_date:
+                bars_for_history = daily_bars[:-1]
+            else:
+                bars_for_history = daily_bars
+            historical_vols = [b.volume or 0 for b in bars_for_history]
 
             # 20-day average volume (excluding today)
             avg_vol_20 = (sum(historical_vols[-20:]) / 20
                           if len(historical_vols) >= 20 else 0)
 
-            # Trend alignment & volume quality scores
-            trend_sc = _trend_alignment_score(spot, sma20, sma50, sma200)
+            # Volume quality score
             vol_qual_sc = _volume_quality_score(today_volume, avg_vol_20, pct_change)
 
             # Intraday 5-min bars for volume flow
@@ -394,7 +394,7 @@ class IBMarketStateFetcher:
                           if total_directional > 0 else 0.0)
 
             # Composite score
-            score = _bullishness_score(pct_change, flow_ratio, trend_sc, vol_qual_sc)
+            score = _bullishness_score(pct_change, flow_ratio, vol_qual_sc)
             label = _classify(score)
 
             return {
@@ -405,13 +405,9 @@ class IBMarketStateFetcher:
                 "up_vol":     int(up_vol),
                 "down_vol":   int(down_vol),
                 "flow_ratio": round(flow_ratio, 3),
-                "sma20":      round(sma20, 2),
-                "sma50":      round(sma50, 2),
-                "sma200":     round(sma200, 2),
                 "today_vol":  int(today_volume),
                 "avg_vol_20": int(avg_vol_20),
                 "vol_ratio":  round(today_volume / avg_vol_20, 2) if avg_vol_20 > 0 else 0,
-                "trend_score":  round(trend_sc, 1),
                 "vol_qual_score": round(vol_qual_sc, 1),
                 "score":      round(score, 1),
                 "label":      label,
@@ -463,13 +459,9 @@ class MockMarketStateFetcher:
             down_vol = max(0, int(up_vol * (1 - flow) / max(1 + flow, 0.01)))
             today_vol = up_vol + down_vol
             avg_vol = int(today_vol * self._rand.uniform(0.7, 1.4))
-            sma20 = spot * self._rand.uniform(0.97, 1.03)
-            sma50 = spot * self._rand.uniform(0.93, 1.05)
-            sma200 = spot * self._rand.uniform(0.85, 1.10)
 
-            trend_sc = _trend_alignment_score(spot, sma20, sma50, sma200)
             vol_qual_sc = _volume_quality_score(today_vol, avg_vol, pct)
-            score = _bullishness_score(pct, flow, trend_sc, vol_qual_sc)
+            score = _bullishness_score(pct, flow, vol_qual_sc)
 
             results.append({
                 "ticker":     ticker,
@@ -480,13 +472,9 @@ class MockMarketStateFetcher:
                 "up_vol":     up_vol,
                 "down_vol":   down_vol,
                 "flow_ratio": round(flow, 3),
-                "sma20":      round(sma20, 2),
-                "sma50":      round(sma50, 2),
-                "sma200":     round(sma200, 2),
                 "today_vol":  today_vol,
                 "avg_vol_20": avg_vol,
                 "vol_ratio":  round(today_vol / avg_vol, 2),
-                "trend_score":    round(trend_sc, 1),
                 "vol_qual_score": round(vol_qual_sc, 1),
                 "score":      round(score, 1),
                 "label":      _classify(score),
@@ -529,15 +517,42 @@ class MarketStateManager:
             return dict(self._cache)
 
     def _worker(self):
+        # ib_insync requires an asyncio event loop in the calling thread.
+        # The main thread has one (set up in run.py), but our background
+        # worker thread inherits nothing — we have to create our own.
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         # Lazy-init fetcher inside the worker thread (IB needs an event loop here)
         if self._use_mock:
+            print("  [Market State] Starting in MOCK mode (use_mock=True)")
             self._fetcher = MockMarketStateFetcher()
         else:
             try:
+                print("  [Market State] Connecting to IB...")
                 self._fetcher = IBMarketStateFetcher()
                 self._fetcher.connect()
+                print("  [Market State] IB connection OK — fetching real data")
             except Exception as exc:
-                print(f"  [Market State] IB connect failed: {exc}, using mock")
+                # FAIL LOUDLY rather than silently fall back to mock — mock data
+                # at production prices is misleading and makes bugs invisible.
+                print("\n" + "="*70)
+                print("  [Market State] IB CONNECTION FAILED")
+                print("="*70)
+                print(f"  Error: {type(exc).__name__}: {exc}")
+                print(f"  Host: {IB_HOST}  Port: {IB_PORT}  ClientId: {IB_CLIENT_ID + 20}")
+                print()
+                print("  Common causes:")
+                print("    • TWS / IB Gateway not running")
+                print("    • Wrong port (TWS=7497 paper, 7496 live; "
+                                       "Gateway=4002 paper, 4001 live)")
+                print("    • API not enabled in TWS Settings → Configuration → API")
+                print("    • Client ID conflict (another connection using this ID)")
+                print("    • 'Allow connections from localhost' not checked in TWS")
+                print()
+                print("  Falling back to MOCK data (clearly marked in cards).")
+                print("="*70 + "\n")
                 traceback.print_exc()
                 self._fetcher = MockMarketStateFetcher()
                 self._use_mock = True
@@ -545,14 +560,19 @@ class MarketStateManager:
         while self._running:
             try:
                 rows = self._fetcher.fetch_all()
+                # Stamp every row with its data source so the UI can warn the user
+                for r in rows:
+                    r["data_source"] = "MOCK" if self._use_mock else "IB"
                 with self._lock:
                     self._cache = {
                         "rows":       rows,
                         "fetched_at": time.time(),
                         "error":      None,
+                        "data_source": "MOCK" if self._use_mock else "IB",
                     }
                 ok = sum(1 for r in rows if not r.get("error"))
-                print(f"  [Market State] Loaded {ok}/{len(rows)} ETFs")
+                src = "MOCK" if self._use_mock else "IB"
+                print(f"  [Market State] {src}: Loaded {ok}/{len(rows)} ETFs")
             except Exception as exc:
                 traceback.print_exc()
                 with self._lock:
@@ -571,6 +591,8 @@ market_state_manager: MarketStateManager | None = None
 
 def init_market_state_manager(use_mock=False) -> MarketStateManager:
     global market_state_manager
+    mode = "MOCK" if use_mock else "IB (live)"
+    print(f"  Initializing Market State Manager [{mode}]")
     market_state_manager = MarketStateManager(use_mock=use_mock)
     market_state_manager.start()
     return market_state_manager
